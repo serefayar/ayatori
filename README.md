@@ -2,7 +2,7 @@
 
 **STATUS**: Pre-alpha, in design and prototyping phase.
 
-ayatori is and experimental LRA (Long Running Action) Coordinator and client libraries that try to follow (not completely) [Eclipse Mircoprofile LRA Spec](https://download.eclipse.org/microprofile/microprofile-lra-1.0/microprofile-lra-spec-1.0.html). 
+ayatori is an experimental LRA (Long Running Action) Coordinator and client libraries that try to follow (not completely) [Eclipse Microprofile LRA Spec](https://download.eclipse.org/microprofile/microprofile-lra-1.0/microprofile-lra-spec-1.0.html). 
 
 
 
