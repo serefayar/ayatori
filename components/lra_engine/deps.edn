@@ -1,0 +1,7 @@
+{:paths ["src" "resources"]
+ :deps {metosin/tilakone                        {:mvn/version "0.0.5-SNAPSHOT"}
+        clj-http/clj-http                       {:mvn/version "3.12.3"}
+        org.clojure/tools.logging               {:mvn/version "1.1.0"}
+        ch.qos.logback/logback-classic          {:mvn/version "1.2.3" :exclusions [org.slf4j/slf4j-api]}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}

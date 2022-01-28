@@ -1,0 +1,10 @@
+{:vcs {:name "git" :auto-add true}
+ :top-namespace "ayatori"
+ :interface-ns "interface"
+ :default-profile-name "default"
+ :compact-views #{}
+ :tag-patterns {:release "v[0-9]*"
+                :stable  "stable-*"}
+ :projects {"development"           {:alias "dev"}
+            "ayatori"               {:alias "app"}
+            "reitit_ayatori"        {:alias "mwr"}}}

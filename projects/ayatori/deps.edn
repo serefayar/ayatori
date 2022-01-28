@@ -1,0 +1,18 @@
+{:paths [] ; no src or resources
+
+ :deps {org.clojure/clojure {:mvn/version "1.10.3"}
+
+        poly/component-app-state {:local/root "../../components/app_state"}
+        poly/component-database {:local/root "../../components/database"}
+        poly/component-lra {:local/root "../../components/lra"}
+        poly/component-lra-engine {:local/root "../../components/lra_engine"}
+        poly/component-web-server {:local/root "../../components/web_server"}
+        poly/base-rest-api {:local/root "../../bases/rest_api"}}
+
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}}}
+
+           :build {:deps {io.github.seancorfield/build-clj
+                          {:git/tag "v0.6.7" :git/sha "22c2d09"
+                           :deps/root "slim"}}
+                   :ns-default build}}}

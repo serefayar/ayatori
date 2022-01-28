@@ -1,0 +1,2 @@
+{:lint-as {fmnoise.flow/flet clojure.core/let}
+ :config-paths ["configs/malli"]}

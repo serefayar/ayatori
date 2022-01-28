@@ -1,0 +1,12 @@
+{:paths [] ; no src or resources
+
+ :deps {org.clojure/clojure {:mvn/version "1.10.3"}
+
+        poly/base-reitit-middleware {:local/root "../../bases/reitit_middleware"}}
+
+ :aliases {:test {:extra-paths []
+                  :extra-deps {}}
+
+           :build {:deps {io.github.seancorfield/build-clj
+                          {:git/tag "v0.6.7" :git/sha "22c2d09"}}
+                   :ns-default build}}}

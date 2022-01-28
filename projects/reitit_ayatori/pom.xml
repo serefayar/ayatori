@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>ayatori</groupId>
+  <artifactId>reitit-ayatori</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <name>reitit-ayatori</name>
+  <description>Ayatori LRA Coordinator reitit feature - middleware</description>
+  <url>https://github.com/serefayar/ayatori</url>
+  <licenses>
+    <license>
+      <name>Eclipse Public License</name>
+      <url>http://www.eclipse.org/legal/epl-v10.html</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <name>Seref</name>
+    </developer>
+  </developers>
+  <scm>
+    <url>https://github.com/serefayar/ayatori</url>
+    <connection>scm:git:git://github.com/serefayar/ayatori.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/serefayar/ayatori.git</developerConnection>
+    <tag>v0.1.0-SNAPSHOT</tag>
+  </scm>
+  <dependencies>
+    <dependency>
+      <groupId>org.clojure</groupId>
+      <artifactId>clojure</artifactId>
+      <version>1.10.3</version>
+    </dependency>
+  </dependencies>
+  <build>
+    <sourceDirectory>src</sourceDirectory>
+  </build>
+  <repositories>
+    <repository>
+      <id>clojars</id>
+      <url>https://repo.clojars.org/</url>
+    </repository>
+  </repositories>
+  <distributionManagement>
+    <repository>
+      <id>clojars</id>
+      <name>Clojars repository</name>
+      <url>https://clojars.org/repo</url>
+    </repository>
+  </distributionManagement>
+</project>
