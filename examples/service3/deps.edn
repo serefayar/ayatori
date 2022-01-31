@@ -1,0 +1,10 @@
+{:paths ["src" "resources"]
+
+ :deps {org.clojure/clojure {:mvn/version "1.10.3"}
+        ring/ring-jetty-adapter {:mvn/version "1.7.1"}
+        metosin/reitit {:mvn/version "0.5.15"}
+        clj-http/clj-http {:mvn/version "3.12.3"}
+
+        ayatori/reitit-middleware {:local/root "../../bases/reitit_middleware"}}
+
+ :aliases {:run {:main-opts ["-m" "example.service"]}}}

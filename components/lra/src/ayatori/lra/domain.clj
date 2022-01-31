@@ -19,19 +19,13 @@
           :decode/json '#(-> % name clojure.string/lower-case keyword)}
    :compansate :complete])
 
-(def LRA
-  [:schema {:registry {::act [:map
-                              [:act/type ActType]
-                              [:act/url [:string]]]
-                       ::lra [:map
-                              [:lra/code LRACode]
-                              [:lra/start-time inst?]
-                              [:lra/time-limit {:default 0} [:int]]
-                              [:lra/finish-time {:optional true} inst?]
-                              [:lra/participants {:optional true} [:vector [:ref ::participant]]]
+(def Act
+  [:map
+   [:act/type ActType]
+   [:act/url [:string]]])
 
-                              [:lra/status LRAStatus]]
-                       ::participant [:map
+(def Participant
+  [:schema {:registry {::participant [:map
                                       [:participant/client-id [:string]]
                                       [:participant/top-level? [:boolean]]
                                       [:participant/status ParticipantStatus]
@@ -45,17 +39,18 @@
                                                                                                [:fn #(true? %)]]]
                                                                                              [:participant/lra-code LRACode]]]]]
 
-                                      [:participant/acts [:vector {:min 2} [:ref ::act]]]]}}
-   ::lra])
+                                      [:participant/acts [:vector {:min 2} Act]]]}}
+   ::participant])
+
+(def LRA
+  [:map
+   [:lra/code LRACode]
+   [:lra/start-time inst?]
+   [:lra/time-limit {:default 0} [:int]]
+   [:lra/finish-time {:optional true} inst?]
+   [:lra/participants {:optional true} [:vector Participant]]
+
+   [:lra/status LRAStatus]])
 
 (def LRAErrorType
   [:enum :generic-error :duplicate-id :start-lra-failed :start-nested-lra-failed :resource-not-found :validation])
-
-(def LRAError
-  [:map
-   [:msg [:string]]
-   [:type LRAErrorType]])
-
-(defn or-fail
-  [spec]
-  [:or spec [:fn (fn [ret] (instance? Fail ret))]])

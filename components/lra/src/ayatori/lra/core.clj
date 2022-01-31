@@ -6,16 +6,17 @@
    [ayatori.lra.db :as db]
    [ayatori.lra-engine.interface :as engine]))
 
-(defn all-lra
-  [ds status]
-  (->> (call db/all-by-status ds status)
-       (else #(fail-with {:msg "unknown error" :data {:type :unkown-error}}))))
+(defn closable-lra?
+  [lra]
+  (= :active (:lra/status lra)))
 
-(defn lra-by-code
-  [ds code]
-  (->> (call db/find-by-code ds code)
-       (then #(or % (fail-with {:msg (format "LRA not found with code %s" code) :data {:type :resource-not-found}})))
-       (else #(fail-with {:msg (ex-message %) :data {:type :generic-error}}))))
+(defn cancellable-lra?
+  [lra]
+  (= :active (:lra/status lra)))
+
+(defn joinable-lra?
+  [lra]
+  (= :active (:lra/status lra)))
 
 (defn data->lra
   [data]
@@ -33,11 +34,28 @@
         (dissoc :lra/acts)
         (dissoc :lra/parent-code))))
 
-(defn ->lra-participant
+(defn ->toplevel-participant
   [lra]
   {:participant/client-id (:lra/client-id lra)
    :participant/top-level? true
    :participant/lra-code (:lra/code lra)})
+
+(defn data->participant
+  [data]
+  (assoc data
+         :participant/top-level? false
+         :participant/status :active))
+
+(defn all-lra
+  [ds status]
+  (->> (call db/all-by-status ds status)
+       (else #(fail-with {:msg "unknown error" :data {:type :unkown-error}}))))
+
+(defn lra-by-code
+  [ds code]
+  (->> (call db/find-by-code ds code)
+       (then #(or % (fail-with {:msg (format "LRA not found with code %s" code) :data {:type :resource-not-found}})))
+       (else #(fail-with {:msg (ex-message %) :data {:type :generic-error}}))))
 
 (defn new-lra!
   [ds data]
@@ -48,7 +66,7 @@
 
 (defn new-nested-lra!
   [ds parent lra]
-  (->> (->lra-participant lra)
+  (->> (->toplevel-participant lra)
        (update parent :lra/participants conj)
        (then #(new-lra! ds %))
        (then (fn [p] {:parent-code (:lra/code p) :lra-code (:lra/code lra)}))
@@ -66,13 +84,16 @@
          (then #(:lra-code %))
          (else #(fail-with {:msg "start lra failed" :data {:type :start-lra-failed} :cause %})))))
 
-(defn closable-lra?
-  [lra]
-  (= :active (:lra/status lra)))
-
-(defn cancellable-lra?
-  [lra]
-  (= :active (:lra/status lra)))
+(defn join!
+  [ds code participant]
+  (->> (lra-by-code ds code)
+       (then-call #(if (joinable-lra? %)
+                     (->> (data->participant participant)
+                          (update % :lra/participants conj)
+                          (db/save! ds))
+                     (fail-with {:msg (format "Joinable LRA not found with code %s" code) :data {:type :resource-not-found}})))
+       (then (fn [_] code))
+       (else #(fail-with {:msg (format "LRA not found with code %s" code) :data {:type :resource-not-found} :cause %}))))
 
 (defn close-lra!
   [ds code]

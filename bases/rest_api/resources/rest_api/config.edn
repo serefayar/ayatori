@@ -1,2 +1,4 @@
-{:web-server {:host "0.0.0.0" :port 3000 :context-path "/lra"}
+{:web-server {:host #or [#env HOST "0.0.0.0"]
+              :port #long #or [#env PORT 3000]
+              :context-path #or [#env CONTEXT-PATH "/lra-coordinator"]}
  :database {:schema {:lra/code {:db/unique :db.unique/identity}}}}
