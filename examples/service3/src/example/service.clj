@@ -7,7 +7,7 @@
             [reitit.ring.coercion :as rrc]
             [reitit.ring.middleware.muuntaja :as muuntaja]
             [reitit.ring.middleware.parameters :as parameters]
-            [ayatori.reitit.ring.middleware.ayatori :as ayatori]))
+            [ayatori.reitit.middleware :as ayatori]))
 
 (def app
   (ring/ring-handler
@@ -22,7 +22,7 @@
                               num (-> request :parameters :query :num)]
 
                           (prn (format "service3 param %s, lra context created with code %s" num (:code lra)))
-                 ;;         (throw (ex-info "boom!" {:data :lra-error}))
+
                           (respond (resp/response (str (+ num 1))))))}}]
      ["/compansate"
       {:lra {:id :order-s3
@@ -34,7 +34,7 @@
       {:lra {:id :order-s3
              :type :complete}
        :put {:handler (fn [request respond _]
-                        (prn (format "service3 complating lra %s" (-> request :lra-params :code)))
+                        (prn (format "service3 completing lra %s" (-> request :lra-params :code)))
                         (respond (resp/response "ok")))}}]]
     {:data {:coercion   reitit.coercion.spec/coercion
             :muuntaja   m/instance

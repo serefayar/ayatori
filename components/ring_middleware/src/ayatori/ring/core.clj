@@ -1,11 +1,10 @@
-(ns ayatori.reitit.ring.middleware.ayatori
-  (:require [reitit.core :as r]
-            [clojure.spec.alpha :as s]
-            [clojure.string :as string]
-            [jsonista.core :as j]
-            [clj-http.client :as client]
-            [clojure.tools.logging :as log])
-  (:gen-class))
+(ns ayatori.ring.core
+  (:require
+   [clojure.spec.alpha :as s]
+   [clojure.string :as string]
+   [jsonista.core :as j]
+   [clj-http.client :as client]
+   [clojure.tools.logging :as log]))
 
 (s/def ::coordinator-url (complement string/blank?))
 (s/def ::options (s/keys :req-un [::coordinator-url]))
@@ -17,8 +16,18 @@
                 :complete})
 (s/def ::end? boolean?)
 (s/def ::id keyword?)
+(s/def ::cancel-on (s/* int?))
+(s/def ::concel-on-family #{:info
+                            :success
+                            :redirect
+                            :client-error
+                            :server-error})
+
 (s/def ::lra (s/keys :req-un [::id ::type]
-                     :opt-un [::end?]))
+                     :opt-un [::end? ;; not implemented
+                              ::cancel-on ;; not implemented
+                              ::cancel-on-family ;; not implemented
+                              ]))
 
 ;; TODO: duplicated definition
 (def context-headers
@@ -31,7 +40,6 @@
 (defn find-lra-defs
   [router lra-id]
   (->> router
-       (r/compiled-routes)
        (filter #(= lra-id (-> % second :lra :id)))
        (map (fn [[p a _]] (assoc (:lra a) :route p)))))
 
@@ -84,6 +92,14 @@
        (client/put (format "%s/%s/close" coordinator-url code))
        :body))
 
+(defn cancel-request!
+  [coordinator-url code]
+  (->> {:content-type :json
+        :socket-timeout 1000
+        :connection-timeout 1000}
+       (client/put (format "%s/%s/cancel" coordinator-url code))
+       :body))
+
 (defn add-lra-params
   [request lra-context header-params]
   (assoc request
@@ -116,6 +132,10 @@
   [{:keys [coordinator-url code]}]
   (close-request! coordinator-url code))
 
+(defn cancel!
+  [{:keys [coordinator-url code]}]
+  (cancel-request! coordinator-url code))
+
 (defn lra-request-handler
   [request {:keys [current-lra] :as lra-context}]
   (condp = (:type current-lra)
@@ -127,63 +147,68 @@
     ;; otherwise
     (header-lra-params request lra-context)))
 
-(defn lra-handler
-  [request {:keys [coordinator-url]}]
-  (if-let [current-lra (-> request :reitit.core/match :data :lra)]
-    (if (s/valid? ::lra current-lra)
-      (let [request' (header-lra-params request current-lra)
-            router (-> request' :reitit.core/router)
-            lra-context {:current-lra current-lra
-                         :code (-> request' :lra-params :code)
-                         :coordinator-url coordinator-url
-                         :base-uri (base-uri request)
-                         :router router
-                         :lra-defs (find-lra-defs router (:id current-lra))}]
-        (lra-request-handler request' lra-context))
-      ;; else
-      (throw (ex-info "invalid lra defination" {:type :spec :data (s/explain-data ::lra current-lra)})))
-    ;; else
-    request))
-
 (defn lra-response-handler
-  [{:keys [current-lra] :as lra-context}]
-  (condp = (:type current-lra)
-    :required-new (do
-                    (log/infof "closing lra %s" (:code lra-context))
-                    (close! lra-context))
+  [{:keys [current-lra] :as lra-context} resp-code]
+  ;; if response code is more then 4XX cancel the lra
+  (if (>= (/ resp-code 100) 4) ;; TODO: need real impl.. use it only for pre-alpha
+    (cancel! lra-context)
+    ;; else
+    (condp = (:type current-lra)
+      :required-new (do
+                      (log/infof "closing lra %s" (:code lra-context))
+                      (close! lra-context))
     ;; TODO: implement other types
-    nil))
+      nil)))
 
-(defn response-error
+;; TODO: implement response-error
+(defn response-lra-error
   [ex]
   (condp = (-> ex ex-data :type)
     :mandatory-context {:status 412}
     {:status 400}))
 
-(defn wrap-lra
-  [handler options]
-  {:pre [(s/valid? ::options options)]}
-  (fn
-    ([request]
-     (handler request))
+(defn -lra-handler
+  [request {:keys [current-lra router] :as options}]
+  (if (s/valid? ::lra current-lra)
+    (let [request' (header-lra-params request current-lra)
 
-    ([request respond raise]
-     (if (seq (-> request :reitit.core/match :data :lra)) ;; in lra context
-       (let [[request' ex] (try [(lra-handler request options)]
-                                (catch Throwable ex
-                                  [nil ex]))]
-         (if ex ;; pre-condition
-           (respond (response-error ex))
-           ;; all ok
-           (handler request'
-                    (fn [response]
-                      (respond response)
-                      (future (lra-response-handler (:lra-params request'))))
-                    raise)))
+          lra-context (merge options
+                             {:code (-> request' :lra-params :code)
+                              :base-uri (base-uri request)
+                              :lra-defs (find-lra-defs router (:id current-lra))})]
+      (lra-request-handler request' lra-context))
+      ;; else
+    (throw (ex-info "invalid lra defination" {:type :spec :data (s/explain-data ::lra current-lra)}))))
 
-       ;; else not in lra context
-       (handler request respond raise)))))
+(defn lra-handler-sync
+  [handler request {:keys [current-lra] :as options}]
+  (if (seq current-lra) ;; in lra context
+    (let [[request' ex] (try [(-lra-handler request options)]
+                             (catch Throwable ex
+                               [nil ex]))]
+      (if ex ;; pre-condition
+        (response-lra-error ex)
+           ;; ok
+        (let [response (handler request')
+              _ (future (lra-response-handler (:lra-params request') (:status response)))]
+          response)))
+       ;; else: not in lra context
+    (handler request)))
 
-(def create-lra-middleware
-  {:name ::lra
-   :wrap wrap-lra})
+(defn lra-handler-async
+  [handler request respond raise {:keys [current-lra] :as options}]
+  (if (seq current-lra) ;; in lra context
+    (let [[request' ex] (try [(-lra-handler request options)]
+                             (catch Throwable ex
+                               [nil ex]))]
+      (if ex ;; pre-condition
+        (respond (response-lra-error ex))
+           ;;ok
+        (handler request'
+                 (fn [response]
+                   (future (lra-response-handler (:lra-params request') (:status response)))
+                   (respond response))
+                 raise)))
+
+       ;; else: not in lra context
+    (handler request respond raise)))

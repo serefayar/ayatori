@@ -9,6 +9,8 @@
                                 "components/database/resources"
                                 "components/web_server/src"
                                 "components/web_server/resources"
+                                "components/ring_middleware/src"
+                                "components/ring_middleware/resources"
 
                                 "bases/reitit_middleware/src"
                                 "bases/reitit_middleware/resources"
@@ -41,6 +43,7 @@
                                  "components/database/test"
                                  "components/app_state/test"
                                  "components/web_server/test"
+                                 "components/ring_middleware/test"
                                  "bases/reitit_middleware/test"
                                  "bases/rest_api/test"
                                  "projects/ayatori/test"]
