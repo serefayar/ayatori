@@ -9,7 +9,7 @@
 (s/def ::coordinator-url (complement string/blank?))
 (s/def ::options (s/keys :req-un [::coordinator-url]))
 
-(s/def ::type #{:required-new
+(s/def ::type #{:requires-new
                 :required #_notimplented
                 :mandatory
                 :compansate
@@ -139,7 +139,7 @@
 (defn lra-request-handler
   [request {:keys [current-lra] :as lra-context}]
   (condp = (:type current-lra)
-    :required-new (start! request lra-context)
+    :requires-new (start! request lra-context)
     :mandatory (if (string/blank? (:code lra-context))
                  (throw (ex-info "mandatory" {:type :mandatory-context}))
                        ;; else
@@ -151,10 +151,12 @@
   [{:keys [current-lra] :as lra-context} resp-code]
   ;; if response code is more then 4XX cancel the lra
   (if (>= (/ resp-code 100) 4) ;; TODO: need real impl.. use it only for pre-alpha
-    (cancel! lra-context)
+    (do
+      (log/infof "cancelling lra %s" (:code lra-context))
+      (cancel! lra-context))
     ;; else
     (condp = (:type current-lra)
-      :required-new (do
+      :requires-new (do
                       (log/infof "closing lra %s" (:code lra-context))
                       (close! lra-context))
     ;; TODO: implement other types

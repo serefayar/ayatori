@@ -22,13 +22,12 @@
                         (let [lra (-> request :lra-params)
                               num (-> request :parameters :query :num)]
 
-                          (prn (format "service2 param %s, lra context created with code %s" num (:code lra)))
+                          (prn (format "service2 param %s, joined to lra context %s" num (:code lra)))
 
                           (try
                             (-> (client/put (format "http://localhost:6000/service3/order?num=%s" (+ num 1)) {:headers (-> request :lra-headers)})
                                 :body
                                 (resp/response)
-                                str
                                 respond)
                             (catch Throwable _
                               (respond (resp/bad-request "bad request"))))))}}]

@@ -19,22 +19,21 @@
                         (respond (resp/response "pong")))}}]
      ["/order"
       {:lra {:id :order
-             :type :required-new}
-       :put {:parameters {:query {:num int?}}
-             :handler (fn [request respond _]
-                        (let [lra (-> request :lra-params)
-                              num (-> request :parameters :query :num)]
+             :type :requires-new}
+       :post {:parameters {:query {:num int?}}
+              :handler (fn [request respond _]
+                         (let [lra (-> request :lra-params)
+                               num (-> request :parameters :query :num)]
 
-                          (prn (format "service1 param %s, lra context created with code %s" num (:code lra)))
+                           (prn (format "service1 param %s, lra context created with code %s" num (:code lra)))
 
-                          (try
-                            (-> (client/put (format "http://localhost:5000/service2/order?num=%s" (str (+ num 1))) {:headers (-> request :lra-headers)})
-                                :body
-                                str
-                                (resp/response)
-                                respond)
-                            (catch Throwable _
-                              (respond (resp/bad-request "bad request"))))))}}]
+                           (try
+                             (-> (client/put (format "http://localhost:5000/service2/order?num=%s" (str (+ num 1))) {:headers (-> request :lra-headers)})
+                                 :body
+                                 (resp/response)
+                                 respond)
+                             (catch Throwable _
+                               (respond (resp/bad-request "bad request"))))))}}]
      ["/compansate"
       {:lra {:id :order
              :type :compansate}

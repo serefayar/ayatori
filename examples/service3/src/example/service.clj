@@ -21,9 +21,9 @@
                         (let [lra (-> request :lra-params)
                               num (-> request :parameters :query :num)]
 
-                          (prn (format "service3 param %s, lra context created with code %s" num (:code lra)))
+                          (prn (format "service3 param %s, joined to lra context %s" num (:code lra)))
 
-                          (respond (resp/response (str (+ num 1))))))}}]
+                          (respond (resp/bad-request (str (+ num 1))))))}}]
      ["/compansate"
       {:lra {:id :order-s3
              :type :compansate}
