@@ -11,7 +11,7 @@
     (if server
       this
       (let [config (-> app-state :config :web-server)]
-        (log/info "web server running")
+        (log/infof "web server running at %s %s" (:host config) (:port config))
         (assoc this
                :server (http/start-server
                         (http/wrap-ring-async-handler

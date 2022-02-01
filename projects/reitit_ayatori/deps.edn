@@ -2,6 +2,7 @@
 
  :deps {org.clojure/clojure {:mvn/version "1.10.3"}
 
+        poly/components-ring-middleware {:local/root "../../components/ring_middleware"}
         poly/base-reitit-middleware {:local/root "../../bases/reitit_middleware"}}
 
  :aliases {:test {:extra-paths []

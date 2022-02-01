@@ -19,8 +19,7 @@
     [["/swagger.json"
       {:get {:no-doc  true
              :swagger {:info     {:title       "Ayatori LRA"
-                                  :description "Ayatori LRA API"}
-                       :basePath ""}
+                                  :description "Ayatori LRA API"}}
              :handler (swagger/create-swagger-handler)}}]
      [context-path {:swagger {:securityDefinitions {:BasicAuth {:type :basic}}
                               :security {:BasicAuth []}}}
@@ -47,7 +46,12 @@
                            400 {:body string?}
                            404 {:body string?}
                            417 {:body string?}}
-               :handler (handler/lra-handler database)}}]
+               :handler (handler/lra-handler database)}
+         :put {:summary "join lra"
+               :parameters {:path [:map [:code uuid?]]
+                            :body lra/JoinParticipantData}
+               :responses {200 {:body string?}}
+               :handler (handler/join-to-lra-handler database)}}]
        ["/:code/close"
         {:put {:summary "close lra"
                :parameters {:path [:map [:code uuid?]]}

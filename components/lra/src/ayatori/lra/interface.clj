@@ -4,6 +4,10 @@
    [ayatori.lra.core :as service]
    [ayatori.lra.domain :as d]))
 
+;;
+;; contracts
+;;
+
 (def LRAStatus
   d/LRAStatus)
 
@@ -11,7 +15,7 @@
   (-> d/LRA
       (mu/dissoc :db/id)
       (mu/dissoc :lra/time-limit)
-;;      (mu/dissoc :lra/participants)
+      (mu/dissoc :lra/participants)
       (mu/dissoc :lra/acts)
       (mu/update-properties assoc :title "LRAData")))
 
@@ -29,9 +33,23 @@
                [:fn {:error/message "duplicate act type"}
                 (fn [v] (every? #(= 1 %) (vals (frequencies (map :act/type v)))))]]]])
 
-(def LRAErrorData
-  (-> d/LRAError
-      (mu/dissoc :type)))
+(def JoinParticipantData
+  (-> d/Participant
+      (mu/dissoc :participant/top-level?)
+      (mu/dissoc :participant/status)
+      (mu/dissoc :participant/participants)
+      (mu/update-properties assoc :title "JoinParticipantData")))
+
+(comment
+  {:participant/client-id "aaa"
+   :participant/top-level? false
+   :participant/status :active
+   :participant/acts [{:act/type :complete :act/url "http://localhost:6000/bbb/complete"}
+                      {:act/type :compansate :act/url "http://localhost:6000/bbb/compansate"}]})
+
+;;
+;; interface
+;;
 
 (defn all-lra
   [ds status]
@@ -44,6 +62,10 @@
 (defn start-lra!
   [ds data]
   (service/start-lra! ds data))
+
+(defn join!
+  [ds code participant]
+  (service/join! ds code participant))
 
 (defn close-lra!
   [ds code]
