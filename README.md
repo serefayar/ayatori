@@ -17,7 +17,7 @@ ayatori is an LRA Coordinator (a.k.a saga coordinator) to manage distributed tra
 
 ### Run the LRA Coordinator
 
-Clone the repo and cd into int. Project uses [Polylith](https://polylith.gitbook.io/) architecture. So, you can use Polylith commands. 
+Clone the repo and cd into it. Project uses [Polylith](https://polylith.gitbook.io/) architecture. So, you can use Polylith commands. 
 
 Let's get project info
 
@@ -222,6 +222,12 @@ what's happened in order:
 5. conpansate request received from the LRA coordinator
 6. conpansate request received from the LRA coordinator
     
+
+## Known alternatives
+
+- [narayana](https://narayana.io/)
+- ...
+
 
 ## TODO
 
