@@ -3,7 +3,8 @@
    [ayatori.rest-api.response :as resp]
    [ayatori.lra.interface :as lra-service]
    [clojure.tools.logging :as log]
-   [fmnoise.flow :as flow :refer [then then-call else]]))
+   [fmnoise.flow :as flow :refer [then then-call else]]
+   [ayatori.lra-engine.interface :as lra-engine]))
 
 (defn start-lra-handler
   [database]

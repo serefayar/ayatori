@@ -10,13 +10,13 @@
   (start [this]
     (if server
       this
-      (let [config (-> app-state :config :web-server)]
-        (log/infof "web server running at %s %s" (:host config) (:port config))
+      (let [{:keys [host port context-path]} (-> app-state :config :web-server)]
+        (log/infof "web server running at %s:%s" host port)
         (assoc this
                :server (http/start-server
                         (http/wrap-ring-async-handler
-                         (handler-fn (:context-path config) (:database app-state)))
-                        (dissoc config :context-path))))))
+                         (handler-fn context-path app-state))
+                        {:host host :port port})))))
   (stop [this]
     (if server
       (do

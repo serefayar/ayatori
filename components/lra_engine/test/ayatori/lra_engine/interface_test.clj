@@ -1,6 +1,4 @@
 (ns ayatori.lra-engine.interface-test
-  (:require [clojure.test :as test :refer :all]
-            [ayatori.lra-engine.interface :as lra_engine]))
+  (:require [ayatori.lra-engine.interface :as sut]
+            [clojure.test :as t]))
 
-(deftest dummy-test
-  (is (= 1 1)))

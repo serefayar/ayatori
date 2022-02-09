@@ -10,8 +10,8 @@
 
 (defn new-system
   [config]
-  (component/system-map :app-state (app-state/create config)
-                        :database (database/create (-> config :database))
+  (component/system-map :database (database/create (-> config :database))
+                        :app-state (app-state/create config)
                         :web-server (web-server/create #'routes/app-handler)))
 
 (defn config
