@@ -2,7 +2,7 @@
   (:require
    [datascript.core :as d]
    [malli.core :as m]
-   [ayatori.lra.domain :as domain]))
+   [ayatori.lra-domain.interface :as domain]))
 
 (def DS
   ;; check an instance of for now

@@ -1,4 +1,4 @@
-(ns ayatori.lra.domain
+(ns ayatori.lra-domain.interface
   (:require
    [java-time :as jt]
    [malli.util :as mu])

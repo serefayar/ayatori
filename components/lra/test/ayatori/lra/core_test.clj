@@ -3,7 +3,7 @@
             [ayatori.lra.db :as db]
             [ayatori.lra.core :as lra]
             [malli.core :as m]
-            [ayatori.lra.domain :as domain]
+            [ayatori.lra-domain.interface :as domain]
             [java-time :as jt]
             [fmnoise.flow :as flow]
             [ayatori.lra-engine.interface :as engine]))

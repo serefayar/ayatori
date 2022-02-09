@@ -4,6 +4,7 @@
 
         poly/component-app-state {:local/root "../../components/app_state"}
         poly/component-database {:local/root "../../components/database"}
+        poly/component-lra-domain {:local/root "../../components/lra_domain"}
         poly/component-lra {:local/root "../../components/lra"}
         poly/component-lra-engine {:local/root "../../components/lra_engine"}
         poly/component-web-server {:local/root "../../components/web_server"}

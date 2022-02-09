@@ -10,7 +10,7 @@
             [reitit.swagger :as swagger]
             [reitit.swagger-ui :as swagger-ui]
             [ayatori.rest-api.handler :as handler]
-            [ayatori.lra.domain :as lra]))
+            [ayatori.lra-domain.interface :as lra]))
 
 (defn app-handler
   [context-path {:keys [database]}]

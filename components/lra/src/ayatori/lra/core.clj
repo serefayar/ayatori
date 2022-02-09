@@ -6,7 +6,7 @@
    [ayatori.lra.db :as db]
    [ayatori.lra-engine.interface :as engine]
    [malli.core :as m]
-   [ayatori.lra.domain :as domain]))
+   [ayatori.lra-domain.interface :as domain]))
 
 (m/=> closable-lra? [:=> [:cat domain/LRA] boolean?])
 (defn closable-lra?

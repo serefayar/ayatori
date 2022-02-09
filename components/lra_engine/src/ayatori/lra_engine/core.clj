@@ -4,7 +4,7 @@
    [clj-http.client :as client]
    [malli.core :as m]
    [clojure.tools.logging :as log]
-   [ayatori.lra.domain :as domain]))
+   [ayatori.lra-domain.interface :as domain]))
 
 (def EngineState
   [:map
