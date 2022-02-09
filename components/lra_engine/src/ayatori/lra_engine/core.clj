@@ -2,7 +2,22 @@
   (:require
    [tilakone.core :as tk]
    [clj-http.client :as client]
-   [clojure.tools.logging :as log]))
+   [malli.core :as m]
+   [clojure.tools.logging :as log]
+   [ayatori.lra-domain.interface :as domain]))
+
+(def EngineState
+  [:map
+   [:tikalone.core/states [:map
+                           [:tilakone.core/name keyword?]
+                           [:tilakone.core/transitions {:optional true}
+                            [:vector [:map
+                                      [:tilakone.core/on keyword?]
+                                      [:tilakone.core/to keyword?]
+                                      [:tilakone.core/actions [:vector keyword?]]]]]]]
+   [:tikalone.core/action! ifn?]
+   [:tikalone.core/state keyword?]
+   [:lra domain/LRA]])
 
 (def context-headers
   {:context "Long-Running-Action"
@@ -11,11 +26,13 @@
    :recovery "Long-Running-Action-Recovery" ;; not implemented
    })
 
+(m/=> http-request! [:=> [:cat keyword? uri? [:* :any]] any?])
 (defn http-request!
   [method url & [opts]]
   (client/request
    (merge {:method method :url url :socket-timeout 1000 :connection-timeout 1000 :content-type :json :accept :json} opts)))
 
+(m/=> find-by-act-type [:=> [:cat domain/Participant domain/ActType] [:or domain/Act nil?]])
 (defn find-by-act-type
   [participant act-type]
   (first (filter #(= act-type (:act/type %)) (:participant/acts participant))))
@@ -23,34 +40,42 @@
 ;;
 ;; cancel LRA
 ;;
-
+(m/=> compansate-participant! [:=> [:cat domain/LRACode domain/Participant] domain/Participant])
 (defn compansate-participant!
   [lra-code participant]
-  (let [act (find-by-act-type participant :compansate)]
+  (if-let [act (find-by-act-type participant :compansate)]
     (try
       (http-request! :put (:act/url act) {:headers {(:context context-headers) lra-code}})
       (log/infof "Participant compansated %s" (:act/url act))
       (assoc participant :participant/status :compansated)
       (catch Exception _
         (log/errorf "%s request to %s failed" (:act/type act) (:act/url act))
-        (assoc participant :participant/status :failed-to-compansate)))))
+        (assoc participant :participant/status :failed-to-compansate)))
+    ;; else
+    (do
+      (log/infof "No Participant found to compansate %s" lra-code)
+      participant)))
 
+(m/=> compansate! [:=> [:cat domain/LRACode [:vector domain/Participant]] [:vector domain/Participant]])
 (defn compansate!
   [lra-code participants]
   (->> (reverse participants)
        (map #(compansate-participant! lra-code %))
        reverse))
 
+(m/=> cancel-lra! [:=> [:cat EngineState] EngineState])
 (defn cancel-lra!
   [{:keys [lra] :as fsm}]
   (->> (compansate! (:lra/code lra) (:lra/participants lra))
        (assoc-in fsm [:lra :lra/participants])))
 
+(m/=> cancel-success [:=> [:cat EngineState] EngineState])
 (defn cancel-success
   [fsm]
   (log/infof "LRA %s cancelled successfully" (-> fsm :lra :lra/code))
   (assoc-in fsm [:lra :lra/status] :cancelled))
 
+(m/=> cancel-failed [:=> [:cat EngineState] EngineState])
 (defn cancel-failed
   [fsm]
   (log/errorf "Cancelling LRA %s failed" (-> fsm :lra :lra/code))
@@ -60,33 +85,42 @@
 ;; close LRA
 ;;
 
+(m/=> complete-participant! [:=> [:cat domain/LRACode domain/Participant] domain/Participant])
 (defn complete-participant!
   [lra-code participant]
-  (let [act (find-by-act-type participant :complete)]
+  (if-let [act (find-by-act-type participant :complete)]
     (try
       (http-request! :put (:act/url act) {:headers {(:context context-headers) lra-code}})
       (log/infof "Participant closed %s" (:act/url act))
       (assoc participant :participant/status :completed)
       (catch Exception _
         (log/errorf "%s request to %s failed" (:act/type act) (:act/url act))
-        (assoc participant :participant/status :failed-to-complete)))))
+        (assoc participant :participant/status :failed-to-complete)))
+    ;; else
+    (do
+      (log/infof "No Participant found to complete %s" lra-code)
+      participant)))
 
+(m/=> complete! [:=> [:cat domain/LRACode [:vector domain/Participant]] [:vector domain/Participant]])
 (defn complete!
   [lra-code participants]
   (->> participants
        (map #(complete-participant! lra-code %))
        reverse))
 
+(m/=> close-lra! [:=> [:cat EngineState] EngineState])
 (defn close-lra!
   [{:keys [lra] :as fsm}]
   (->> (complete! (:lra/code lra) (:lra/participants lra))
        (assoc-in fsm [:lra :lra/participants])))
 
+(m/=> close-success [:=> [:cat EngineState] EngineState])
 (defn close-success
   [fsm]
   (log/infof "LRA %s closed successfully" (-> fsm :lra :lra/code))
   (assoc-in fsm [:lra :lra/status] :closed))
 
+(m/=> close-failed [:=> [:cat EngineState] EngineState])
 (defn close-failed
   [fsm]
   (log/errorf "Closing LRA %s failed" (-> fsm :lra :lra/code))
@@ -110,6 +144,7 @@
    {::tk/name :closed}
    {::tk/name :failed-to-close}])
 
+(m/=> make-state [:=> [:cat domain/LRA] EngineState])
 (defn make-state
   [lra]
   {::tk/states lra-states
@@ -124,6 +159,7 @@
    ::tk/state (:lra/status lra)
    :lra lra})
 
+(m/=> close! [:=> [:cat domain/LRA] EngineState])
 (defn close!
   [lra]
   (-> (make-state lra)
@@ -134,6 +170,7 @@
            (tk/apply-signal fsm :success))))
       :lra))
 
+(m/=> cancel! [:=> [:cat domain/LRA] EngineState])
 (defn cancel!
   [lra]
   (-> (make-state lra)

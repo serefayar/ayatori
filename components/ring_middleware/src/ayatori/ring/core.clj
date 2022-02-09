@@ -23,11 +23,45 @@
                             :client-error
                             :server-error})
 
-(s/def ::lra (s/keys :req-un [::id ::type]
-                     :opt-un [::end? ;; not implemented
-                              ::cancel-on ;; not implemented
-                              ::cancel-on-family ;; not implemented
-                              ]))
+(s/def ::lra-def (s/keys :req-un [::id ::type]
+                         :opt-un [::end? ;; not implemented
+                                  ::cancel-on ;; not implemented
+                                  ::cancel-on-family ;; not implemented
+                                  ]))
+
+(s/def :act/type #{:compansate :complete})
+(s/def :act/url string?)
+(s/def ::act (s/keys :req [:act/type
+                           :act/url]))
+
+(s/def :lra/client-id string?)
+(s/def :lra/time-limit nat-int?)
+(s/def :lra/parent-code string?)
+(s/def :lra/acts (s/coll-of ::act :into []))
+
+(s/def ::lra (s/keys :req [:lra/client-id
+                           :lra/time-limit
+                           :lra/parent-code
+                           :lra/acts]))
+
+(s/def :participant/client-id string?)
+(s/def :participant/acts (s/coll-of ::act :into []))
+(s/def ::participant (s/keys :req [:participant/client-id
+                                   :participant/acts]))
+{:body ""
+ :content-type :json
+                     :socket-timeout 1000
+ :connection-timeout 1000}
+
+(s/def ::body string?)
+(s/def ::content-type #{:json})
+(s/def ::socket-timeout nat-int?)
+(s/def ::connection-timeout nat-int?)
+(s/def ::request (s/keys :req-un [::content-type
+                                  ::socket-timeout
+                                  ::connection-timeout]
+                         :opt-un [::body]))
+
 
 ;; TODO: duplicated definition
 (def context-headers
@@ -43,60 +77,66 @@
        (filter #(= lra-id (-> % second :lra :id)))
        (map (fn [[p a _]] (assoc (:lra a) :route p)))))
 
-(defn base-uri
-  [request]
-  (format "%s://%s:%s" (name (:scheme request)) (:server-name request) (:server-port request)))
+(defn base-url
+  [{:keys [scheme server-name server-port]
+    :or {scheme :http server-name "localhost" server-port "3000"}}]
+  (-> (format "%s://%s:%s" ((comp str name) scheme) server-name server-port)
+      (java.net.URL.)
+      str))
 
 (defn create-acts
   [{:keys [base-uri current-lra lra-defs]}]
-  (->> lra-defs
-       (drop-while #(= (:type current-lra) (:type %)))
-       (map (fn [lra-def] {:act/type (:type lra-def)
-                           :act/url (format "%s%s" base-uri (:route lra-def))}))))
+  (when current-lra
+    (->> lra-defs
+         (drop-while #(= (:type current-lra) (:type %)))
+         (map (fn [lra-def] {:act/type (:type lra-def)
+                             :act/url (format "%s%s" base-uri (:route lra-def))})))))
 
 (defn new-lra
   [lra-context]
-  {:lra/client-id "aaa"
-   :lra/time-limit 0
-   :lra/parent-code ""
-   :lra/acts (create-acts lra-context)})
+  (when lra-context
+    {:lra/client-id "aaa"
+     :lra/time-limit 0
+     :lra/parent-code ""
+     :lra/acts (create-acts lra-context)}))
 
 (defn new-participant
   [lra-context]
-  {:participant/client-id "bbb"
-   :participant/acts (create-acts lra-context)})
+  (when lra-context
+    {:participant/client-id "bbb"
+     :participant/acts (create-acts lra-context)}))
+
+(defn new-request
+  ([]
+   (new-request nil))
+  ([body]
+   (cond-> {}
+     (some? body) (assoc :body (j/write-value-as-string body))
+     :always (merge {:content-type :json
+                     :socket-timeout 1000
+                     :connection-timeout 1000}))))
 
 (defn register-request!
   [coordinator-url lra]
-  (->> {:body (j/write-value-as-string lra)
-        :content-type :json
-        :socket-timeout 1000
-        :connection-timeout 1000}
+  (->> (new-request lra)
        (client/post (format "%s/start" coordinator-url))
        :body))
 
 (defn join-request!
   [coordinator-url code participant]
-  (->> {:body (j/write-value-as-string participant)
-        :content-type :json
-        :socket-timeout 1000
-        :connection-timeout 1000}
+  (->> (new-request participant)
        (client/put (format "%s/%s" coordinator-url code))
        :body))
 
 (defn close-request!
   [coordinator-url code]
-  (->> {:content-type :json
-        :socket-timeout 1000
-        :connection-timeout 1000}
+  (->> (new-request)
        (client/put (format "%s/%s/close" coordinator-url code))
        :body))
 
 (defn cancel-request!
   [coordinator-url code]
-  (->> {:content-type :json
-        :socket-timeout 1000
-        :connection-timeout 1000}
+  (->> (new-request)
        (client/put (format "%s/%s/cancel" coordinator-url code))
        :body))
 
@@ -118,15 +158,15 @@
 
 (defn start!
   [request {:keys [coordinator-url] :as lra-context}]
-  (->> (new-lra lra-context)
-       (register-request! coordinator-url)
-       (#(add-lra-params request lra-context {"long-running-action" %}))))
+  (some->> (new-lra lra-context)
+           (register-request! coordinator-url)
+           (#(add-lra-params request lra-context {"long-running-action" %}))))
 
 (defn join!
   [request {:keys [coordinator-url code] :as lra-context}]
-  (->> (new-participant lra-context)
-       (#(join-request! coordinator-url code %))
-       (#(add-lra-params request lra-context {"long-running-action" %}))))
+  (some->> (new-participant lra-context)
+           (#(join-request! coordinator-url code %))
+           (#(add-lra-params request lra-context {"long-running-action" %}))))
 
 (defn close!
   [{:keys [coordinator-url code]}]
@@ -171,16 +211,16 @@
 
 (defn -lra-handler
   [request {:keys [current-lra router] :as options}]
-  (if (s/valid? ::lra current-lra)
+  (if (s/valid? ::lra-def current-lra)
     (let [request' (header-lra-params request current-lra)
 
           lra-context (merge options
                              {:code (-> request' :lra-params :code)
-                              :base-uri (base-uri request)
+                              :base-uri (base-url request)
                               :lra-defs (find-lra-defs router (:id current-lra))})]
       (lra-request-handler request' lra-context))
       ;; else
-    (throw (ex-info "invalid lra defination" {:type :spec :data (s/explain-data ::lra current-lra)}))))
+    (throw (ex-info "invalid lra defination" {:type :spec :data (s/explain-data ::lra-def current-lra)}))))
 
 (defn lra-handler-sync
   [handler request {:keys [current-lra] :as options}]

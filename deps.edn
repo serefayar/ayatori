@@ -1,4 +1,6 @@
 {:aliases  {:dev {:extra-paths ["development/src"
+                                "components/lra_domain/src"
+                                "components/lra_domain/resources"
                                 "components/lra/src"
                                 "components/lra/resources"
                                 "components/lra_engine/src"
@@ -38,7 +40,8 @@
                                metosin/reitit-dev                       {:mvn/version "0.5.15"}
                                org.babashka/sci                         {:mvn/version "0.2.7"}}}
 
-            :test {:extra-paths ["components/lra/test"
+            :test {:extra-paths ["components/lra_domain/test"
+                                 "components/lra/test"
                                  "components/lra_engine/test"
                                  "components/database/test"
                                  "components/app_state/test"

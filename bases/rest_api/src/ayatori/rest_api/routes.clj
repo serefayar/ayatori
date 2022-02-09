@@ -10,10 +10,10 @@
             [reitit.swagger :as swagger]
             [reitit.swagger-ui :as swagger-ui]
             [ayatori.rest-api.handler :as handler]
-            [ayatori.lra.interface :as lra]))
+            [ayatori.lra-domain.interface :as lra]))
 
 (defn app-handler
-  [context-path database]
+  [context-path {:keys [database]}]
   (ring/ring-handler
    (ring/router
     [["/swagger.json"
