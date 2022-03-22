@@ -7,17 +7,19 @@
    [clojure.tools.logging :as log]))
 
 (s/def ::coordinator-url (complement string/blank?))
+
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (s/def ::options (s/keys :req-un [::coordinator-url]))
 
 (s/def ::type #{:requires-new
                 :required #_notimplented
                 :mandatory
-                :compansate
+                :compensate
                 :complete})
 (s/def ::end? boolean?)
 (s/def ::id keyword?)
 (s/def ::cancel-on (s/* int?))
-(s/def ::concel-on-family #{:info
+(s/def ::cancel-on-family #{:info
                             :success
                             :redirect
                             :client-error
@@ -29,7 +31,7 @@
                                   ::cancel-on-family ;; not implemented
                                   ]))
 
-(s/def :act/type #{:compansate :complete})
+(s/def :act/type #{:compensate :complete})
 (s/def :act/url string?)
 (s/def ::act (s/keys :req [:act/type
                            :act/url]))
@@ -48,10 +50,6 @@
 (s/def :participant/acts (s/coll-of ::act :into []))
 (s/def ::participant (s/keys :req [:participant/client-id
                                    :participant/acts]))
-{:body ""
- :content-type :json
-                     :socket-timeout 1000
- :connection-timeout 1000}
 
 (s/def ::body string?)
 (s/def ::content-type #{:json})
@@ -61,7 +59,6 @@
                                   ::socket-timeout
                                   ::connection-timeout]
                          :opt-un [::body]))
-
 
 ;; TODO: duplicated definition
 (def context-headers

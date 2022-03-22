@@ -23,10 +23,10 @@
 
                           (prn (format "service3 param %s, joined to lra context %s" num (:code lra)))
 
-                          (respond (resp/bad-request (str (+ num 1))))))}}]
-     ["/compansate"
+                          (respond (resp/response (str (+ num 1))))))}}]
+     ["/compensate"
       {:lra {:id :order-s3
-             :type :compansate}
+             :type :compensate}
        :put {:handler (fn [request respond _]
                         (prn (format "service3 compansating lra %s" (-> request :lra-params :code)))
                         (respond (resp/response "ok")))}}]

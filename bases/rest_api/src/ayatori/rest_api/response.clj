@@ -1,12 +1,14 @@
 (ns ayatori.rest-api.response
   (:require
+   [exoscale.ex :as ex]
    [ring.util.response :as resp]))
 
 (defmulti error
   (fn [ex]
     (-> ex
         (ex-data)
-        :type)))
+        ::ex/type
+        ((comp keyword name)))))
 
 (defmethod error :default [ex]
   (-> ex

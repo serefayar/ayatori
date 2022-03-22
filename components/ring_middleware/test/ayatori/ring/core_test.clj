@@ -15,9 +15,9 @@
      {:lra {:id :test
             :type :requires-new}
       :post {:handler (fn [& _])}}]
-    ["/compansate"
+    ["/compensate"
      {:lra {:id :test
-            :type :compansate}
+            :type :compensate}
       :put {:handler (fn [& _])}}]
     ["/complete"
      {:lra {:id :test
@@ -26,7 +26,7 @@
 
 (def lra-defs-fixture
   [{:id :test, :type :requires-new, :route "/service1/order"}
-   {:id :test, :type :compansate, :route "/service1/compansate"}
+   {:id :test, :type :compensate, :route "/service1/compensate"}
    {:id :test, :type :complete, :route "/service1/complete"}])
 
 (def lra-code (.toString (java.util.UUID/randomUUID)))
@@ -51,8 +51,8 @@
   (testing "given lra context it should return acts"
     (let [ret (core/create-acts lra-context-fixture)]
       (is (seq ret))
-      (is (= [:compansate :complete] (map :act/type ret)))
-      (is (= [:compansate :complete] (map :act/type ret)))
+      (is (= [:compensate :complete] (map :act/type ret)))
+      (is (= [:compensate :complete] (map :act/type ret)))
       (is (every? #(uri? (.toURI (java.net.URL. (:act/url %)))) ret))))
 
   (testing "return nil if lra-defs is missing in the context"

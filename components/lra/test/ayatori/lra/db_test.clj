@@ -2,9 +2,10 @@
   (:require [ayatori.lra.db :as db]
             [clojure.test :as t :refer [deftest is testing use-fixtures]]
             [java-time :as jt]
+            [exoscale.ex.test]
             [datascript.core :as d]))
 
-(def lra-code (str (java.util.UUID/randomUUID)))
+(def lra-code (db/uuid))
 
 (def lra-fixture
   {:lra/code lra-code
@@ -18,12 +19,12 @@
                        :participant/top-level? false
                        :participant/status :active
                        :participant/acts [{:act/type :complete :act/url "http://localhost:6000/bbb/complete"}
-                                          {:act/type :compansate :act/url "http://localhost:6000/bbb/compansate"}]}
+                                          {:act/type :compensate :act/url "http://localhost:6000/bbb/compensate"}]}
                       {:participant/client-id "ccc"
                        :participant/top-level? false
                        :participant/status :active
                        :participant/acts [{:act/type :complete :act/url "http://localhost:5000/ccc/complete"}
-                                          {:act/type :compansate :act/url "http://localhost:5000/ccc/compansate"}]}]})
+                                          {:act/type :compensate :act/url "http://localhost:5000/ccc/compensate"}]}]})
 
 (def ^:dynamic *db*)
 
@@ -59,7 +60,8 @@
 
 (deftest set-status!-test
   (testing "when no record found it throws exception"
-    (is (thrown? clojure.lang.ExceptionInfo (db/set-status! *db* "" :active))))
+    (is (thrown-ex-info-type? :ayatori.lra.db/generic-db-error
+                              (db/set-status! *db* (db/uuid) :active))))
 
   (testing "when lra exists it should update status"
     (let [code (str (java.util.UUID/randomUUID))

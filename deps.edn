@@ -1,4 +1,4 @@
-{:aliases  {:dev {:extra-paths ["development/src"
+{:aliases {:dev  {:extra-paths ["development/src"
                                 "components/lra_domain/src"
                                 "components/lra_domain/resources"
                                 "components/lra/src"
@@ -18,42 +18,45 @@
                                 "bases/reitit_middleware/resources"
                                 "bases/rest_api/src"
                                 "bases/rest_api/resources"]
-                  :extra-deps {org.clojure/clojure                      {:mvn/version "1.10.3"}
-                               org.clojure/tools.logging                {:mvn/version "1.1.0"}
-                               ch.qos.logback/logback-classic           {:mvn/version "1.2.3" :exclusions [org.slf4j/slf4j-api]}
-                               com.stuartsierra/component               {:mvn/version "1.0.0"}
-                               aleph/aleph                              {:mvn/version "0.4.7-alpha10"}
-                               reloaded.repl/reloaded.repl              {:mvn/version "0.2.3"}
-                               aero/aero                                {:mvn/version "1.1.6"}
-                               fmnoise/flow                             {:mvn/version "4.1.0"}
-                               datascript/datascript                    {:mvn/version  "1.3.4"}
-                               metosin/tilakone                         {:mvn/version "0.0.5-SNAPSHOT"}
-                               clj-http/clj-http                        {:mvn/version "3.12.3"}
-                               clojure.java-time/clojure.java-time      {:mvn/version "0.3.3"}
-                               metosin/malli                            {:mvn/version "0.7.0"}
-                               metosin/reitit-core                      {:mvn/version "0.5.15"}
-                               metosin/reitit-ring                      {:mvn/version "0.5.15"}
-                               metosin/reitit-middleware                {:mvn/version "0.5.15"}
-                               metosin/reitit-malli                     {:mvn/version "0.5.15" :exclusion [metosin/malli]}
-                               metosin/reitit-swagger                   {:mvn/version "0.5.15"}
-                               metosin/reitit-swagger-ui                {:mvn/version "0.5.15"}
-                               metosin/reitit-dev                       {:mvn/version "0.5.15"}
-                               org.babashka/sci                         {:mvn/version "0.2.7"}}}
+                  :extra-deps  {org.clojure/clojure                 {:mvn/version "1.10.3"}
+                                org.clojure/core.async              {:mvn/version "1.5.648"}
+                                org.clojure/tools.logging           {:mvn/version "1.1.0"}
+                                ch.qos.logback/logback-classic      {:mvn/version "1.2.3"
+                                                                     :exclusions  [org.slf4j/slf4j-api]}
+                                com.stuartsierra/component          {:mvn/version "1.0.0"}
+                                aleph/aleph                         {:mvn/version "0.4.7"}
+                                reloaded.repl/reloaded.repl         {:mvn/version "0.2.3"}
+                                aero/aero                           {:mvn/version "1.1.6"}
+                                exoscale/ex                         {:mvn/version "0.4.0"}
+                                datascript/datascript               {:mvn/version "1.3.4"}
+                                metosin/tilakone                    {:mvn/version "0.0.5-SNAPSHOT"}
+                                clj-http/clj-http                   {:mvn/version "3.12.3"}
+                                clojure.java-time/clojure.java-time {:mvn/version "0.3.3"}
+                                metosin/malli                       {:mvn/version "0.7.0"}
+                                metosin/reitit-core                 {:mvn/version "0.5.15"}
+                                metosin/reitit-ring                 {:mvn/version "0.5.15"}
+                                metosin/reitit-middleware           {:mvn/version "0.5.15"}
+                                metosin/reitit-malli                {:mvn/version "0.5.15"
+                                                                     :exclusion   [metosin/malli]}
+                                metosin/reitit-swagger              {:mvn/version "0.5.15"}
+                                metosin/reitit-swagger-ui           {:mvn/version "0.5.15"}
+                                metosin/reitit-dev                  {:mvn/version "0.5.15"}
+                                org.babashka/sci                    {:mvn/version "0.2.7"}}}
 
-            :test {:extra-paths ["components/lra_domain/test"
-                                 "components/lra/test"
-                                 "components/lra_engine/test"
-                                 "components/database/test"
-                                 "components/app_state/test"
-                                 "components/web_server/test"
-                                 "components/ring_middleware/test"
-                                 "bases/reitit_middleware/test"
-                                 "bases/rest_api/test"
-                                 "projects/ayatori/test"]
-                   :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}}}
+           :test {:extra-paths ["components/lra_domain/test"
+                                "components/lra/test"
+                                "components/lra_engine/test"
+                                "components/database/test"
+                                "components/app_state/test"
+                                "components/web_server/test"
+                                "components/ring_middleware/test"
+                                "bases/reitit_middleware/test"
+                                "bases/rest_api/test"
+                                "projects/ayatori/test"]
+                  :extra-deps  {org.clojure/test.check {:mvn/version "1.1.1"}}}
 
-            :poly {:main-opts ["-m" "polylith.clj.core.poly-cli.core"]
-                   :extra-deps {polyfy/polylith
-                                {:git/url   "https://github.com/polyfy/polylith"
-                                 :sha       "9cd712ae17973a52ce20cd1108bf81c8391ac0f1"
-                                 :deps/root "projects/poly"}}}}}
+           :poly {:main-opts  ["-m" "polylith.clj.core.poly-cli.core"]
+                  :extra-deps {polyfy/polylith
+                               {:git/url   "https://github.com/polyfy/polylith"
+                                :sha       "9cd712ae17973a52ce20cd1108bf81c8391ac0f1"
+                                :deps/root "projects/poly"}}}}}

@@ -1,146 +1,232 @@
 (ns ayatori.lra.core
   (:require
    [clojure.string :as string]
-   [fmnoise.flow :as flow :refer [call else fail-with flet then then-call]]
    [java-time :as jt]
    [ayatori.lra.db :as db]
-   [ayatori.lra-engine.interface :as engine]
    [malli.core :as m]
-   [ayatori.lra-domain.interface :as domain]))
+   [exoscale.ex :as ex]
+   [ayatori.lra-domain.interface :as domain]
+   [clojure.core.async :as async])
+  (:import (clojure.core.async.impl.channels ManyToManyChannel)))
 
-(m/=> closable-lra? [:=> [:cat domain/LRA] boolean?])
+
+(def AsyncChannel
+  ;; check an instance of for now
+  [:fn (fn [v] (instance? ManyToManyChannel v))])
+
+(m/=> closable-lra? [:=>
+                     [:cat domain/LRA]
+                     boolean?])
 (defn closable-lra?
   [lra]
   (= :active (:lra/status lra)))
 
-(m/=> cancellable-lra? [:=> [:cat domain/LRA] boolean?])
+(m/=> cancellable-lra? [:=>
+                        [:cat domain/LRA]
+                        boolean?])
 (defn cancellable-lra?
   [lra]
   (= :active (:lra/status lra)))
 
-(m/=> joinable-lra? [:=> [:cat domain/LRA] boolean?])
+(m/=> joinable-lra? [:=>
+                     [:cat domain/LRA]
+                     boolean?])
 (defn joinable-lra?
   [lra]
   (= :active (:lra/status lra)))
 
-(m/=> data->lra [:=> [:cat domain/StartLRAData] domain/LRA])
+(m/=> data->lra [:=>
+                 [:cat domain/StartLRAData]
+                 domain/LRA])
 (defn data->lra
   [data]
-  (let [now (jt/instant)
+  (let [now        (jt/instant)
         time-limit (:lra/time-limit data)]
     (-> data
-        (assoc :lra/code (str (java.util.UUID/randomUUID))
+        (assoc :lra/code (db/uuid)
                :lra/start-time now
                :lra/status :active
-               :lra/participants [{:participant/client-id (:lra/client-id data)
+               :lra/participants [{:participant/client-id  (:lra/client-id data)
                                    :participant/top-level? false
-                                   :participant/status :active
-                                   :participant/acts (:lra/acts data)}])
+                                   :participant/status     :active
+                                   :participant/acts       (:lra/acts data)}])
         (#(if (> time-limit 0) (assoc % :lra/finish-time (jt/plus now (jt/millis time-limit))) %))
         (dissoc :lra/acts)
         (dissoc :lra/parent-code))))
 
-(m/=> ->toplevel-participant [:=> [:cat domain/StartLRAData] domain/TopLevelParticipant])
+(m/=> ->toplevel-participant [:=>
+                              [:cat domain/LRA]
+                              domain/Participant])
+
 (defn ->toplevel-participant
   [lra]
-  {:participant/client-id (:lra/client-id lra)
+  {:participant/client-id  (:lra/client-id lra)
    :participant/top-level? true
-   :participant/status :active
-   :participant/lra-code (:lra/code lra)})
+   :participant/status     :active
+   :participant/lra-code   (:lra/code lra)})
 
-(m/=> data->participant [:=> [:cat domain/JoinParticipantData] domain/Participant])
+(m/=> data->participant [:=>
+                         [:cat domain/JoinParticipantData]
+                         domain/Participant])
 (defn data->participant
   [data]
   (assoc data
          :participant/top-level? false
          :participant/status :active))
 
-(m/=> all-lra [:=> [:cat db/DS domain/LRAStatus] [:or domain/LRA domain/LRAErrorType]])
+(m/=> all-lra [:=>
+               [:cat db/DatabaseComponent domain/LRAStatus]
+               [:maybe [:vector domain/LRA]]])
+
 (defn all-lra
-  [ds status]
-  (->> (call db/all-by-status ds status)
-       (else #(fail-with {:msg "unknown error" :data {:type :unkown-error} :cause %}))))
+  [database status]
+  (db/all-by-status (database) status))
 
-(m/=> lra-by-code [:=> [:cat db/DS domain/LRACode] [:or domain/LRA domain/LRAErrorType]])
+(m/=> lra-by-code [:=>
+                   [:cat db/DatabaseComponent domain/LRACode]
+                   [:maybe domain/LRA]])
 (defn lra-by-code
-  [ds code]
-  (->> (call db/find-by-code ds code)
-       (then #(or % (fail-with {:msg (format "LRA not found with code %s" code) :data {:type :resource-not-found}})))
-       (else #(fail-with {:msg (ex-message %) :data {:type (or (-> % ex-data :type) :generic-error)}}))))
+  [database code]
+  (ex/try+
+   (->
+    (db/find-by-code (database) code)
+    (#(or %
+          (throw (ex-info (format "LRA not found with code %s" code)
+                          {::ex/type ::lra-not-found :lra-code code})))))
+   (catch :ayatori.lra.db/generic-db-error _
+     (throw (ex-info (format "LRA not found with code %s" code)
+                     {::ex/type ::lra-not-found :lra-code code})))))
 
-(m/=> new-lra! [:=> [:cat db/DS domain/StartLRAData] [:or domain/LRA domain/LRAErrorType]])
+(m/=> update-lra! [:=>
+                   [:cat db/DatabaseComponent domain/LRA]
+                   [:maybe domain/LRA]])
+
+(defn update-lra!
+  [database lra]
+  (ex/try+
+   (->> (lra-by-code database (:lra/code lra))
+        (db/save! (database)))
+   (catch Exception e
+     (throw (ex-info "Update LRA failed"
+                     {::ex/type ::update-lra-failed} e)))))
+
+(m/=> new-lra! [:=>
+                [:cat db/DatabaseComponent domain/StartLRAData]
+                [:maybe domain/LRA]])
 (defn new-lra!
-  [ds data]
-  (->> (data->lra data)
-       (then-call #(db/save! ds %))
-       (else #(fail-with {:msg "Creating new lra failed" :data {:type :start-lra-failed} :cause %}))))
+  [database data]
+  (ex/try+
+   (->> (data->lra data)
+        (db/save! (database)))
+   (catch Exception e
+     (throw (ex-info "Createing new LRA failed"
+                     {::ex/type ::start-lra-failed} e)))))
 
-(m/=> new-nested-lra! [:=> [:cat db/DS domain/LRA domain/LRA] [:or [:map [:parent-code domain/LRACode] [:lra-code domain/LRACode]] domain/LRAErrorType]])
+
+(m/=> new-nested-lra! [:=>
+                       [:cat db/DatabaseComponent domain/LRA domain/LRA]
+                       [:maybe [:map [:parent-code domain/LRACode]
+                                [:lra-code domain/LRACode]]]])
+
 (defn new-nested-lra!
-  [ds parent lra]
-  (->> (->toplevel-participant lra)
-       (update parent :lra/participants conj)
-       (then-call #(new-lra! ds %))
-       (then (fn [p] {:parent-code (:lra/code p) :lra-code (:lra/code lra)}))
-       (else #(fail-with {:msg "Creating nested lra failed" :data {:type :start-nested-lra-failed} :cause %}))))
+  [database parent lra]
+  (ex/try+
+   (->> (->toplevel-participant lra)
+        (update parent :lra/participants conj)
+        (new-lra! database)
+        :lra/code
+        (assoc {} :lra-code (:lra/code lra) :parent-code))
+   (catch Exception e
+     (throw (ex-info "Creating nested LRA failed"
+                     {::ex/type ::start-nested-lra-failed} e)))))
 
-(m/=> start-lra! [:=> [:cat db/DS domain/StartLRAData] [:or domain/LRA domain/LRAErrorType]])
+(m/=> start-lra! [:=>
+                  [:cat db/DatabaseComponent domain/StartLRAData]
+                  [:maybe domain/LRACode]])
 (defn start-lra!
-  [ds data]
-  (if (string/blank? (:lra/parent-code data))
-    (->> (call new-lra! ds data)
-         (then #(:lra/code %)))
-    (->> (flet [parent (lra-by-code ds (:lra/parent-code data))
-                lra (new-lra! ds data)]
-               {:parent parent :lra lra})
-         (then #(new-nested-lra! ds (:parent %) (:lra %)))
-         (then #(:lra-code %))
-         (else #(fail-with {:msg "start lra failed" :data {:type :start-lra-failed} :cause %})))))
+  [database data]
+  (ex/try+
+   (if (string/blank? (:lra/parent-code data))
+     (-> (new-lra! database data)
+         :lra/code)
+     ;;else
+     (let [parent (lra-by-code database (:lra/parent-code data))
+           lra    (new-lra! database data)]
+       (-> (new-nested-lra! database parent lra)
+           :lra-code)))
+   (catch Exception e
+     (throw (ex-info "Start LRA failed"
+                     {::ex/type ::start-lra-failed} e)))))
 
-(m/=> join! [:=> [:cat db/DS domain/LRACode domain/JoinParticipantData] [:or domain/LRACode domain/LRAErrorType]])
+(m/=> join! [:=>
+             [:cat db/DatabaseComponent domain/LRACode domain/JoinParticipantData]
+             [:maybe domain/LRACode]])
 (defn join!
-  [ds code participant]
-  (->> (lra-by-code ds code)
-       (then-call #(if (joinable-lra? %)
-                     (->> (data->participant participant)
-                          (update % :lra/participants conj)
-                          (db/save! ds))
-                     (fail-with {:msg (format "Joinable LRA not found with code %s" code) :data {:type :resource-not-found}})))
-       (then #(:lra/code %))
-       (else #(fail-with {:msg (format "LRA not found with code %s" code) :data {:type :resource-not-found} :cause %}))))
+  [database code participant]
+  (ex/try+
+   (->> (lra-by-code database code)
+        (#(if (joinable-lra? %)
+            (->> (data->participant participant)
+                 (update % :lra/participants conj)
+                 (db/save! (database)))
+            ;; else
+            (throw (ex-info (format "Joinable LRA not found with code %s" code)
+                            {::ex/type ::lra-not-found}))))
+        :lra/code)
+   (catch Exception e
+     (throw (ex-info (format "Join failed with code %s" code)
+                     {::ex/type ::join-lra-failed} e)))))
 
-(m/=> close! [:=> [:cat db/DS domain/LRA] [:fn future?]])
+(m/=> close! [:=>
+              [:cat db/DatabaseComponent AsyncChannel domain/LRA]
+              [:maybe domain/LRACode]])
 (defn close!
-  [ds lra]
-  (future (->> (engine/close! lra)
-               (db/save! ds))))
+  [database lra-engine-input-chan {:lra/keys [code]
+                                   :as       lra}]
+  (if (closable-lra? lra)
+    (do
+      (db/set-status! (database) code :closing)
+      (async/go (async/put! lra-engine-input-chan {:type :close
+                                                   :lra  lra}))
+      code)
+    (throw (ex-info (format "Closable LRA not found with code %s" code)
+                    {::ex/type ::lra-not-found}))))
 
-(m/=> close-lra! [:=> [:cat db/DS domain/LRACode] [:or domain/LRACode domain/LRAErrorType]])
+(m/=> close-lra! [:=>
+                  [:cat db/DatabaseComponent AsyncChannel domain/LRACode]
+                  [:maybe domain/LRACode]])
 (defn close-lra!
-  [ds code]
-  (->> (lra-by-code ds code)
-       (then-call #(if (closable-lra? %)
-                     (do
-                       (db/set-status! ds (:lra/code %) :closing)
-                       (close! ds %))
-                     (fail-with {:msg (format "Closable LRA not found with code %s" code) :data {:type :resource-not-found}})))
-       (then (fn [_] code))
-       (else #(fail-with {:msg (format "LRA not found with code %s" code) :data {:type :resource-not-found} :cause %}))))
+  [database lra-engine-input-chan code]
+  (ex/try+
+   (->> (lra-by-code database code)
+        (close! database lra-engine-input-chan))
+   (catch Exception e
+     (throw (ex-info "Close LRA failed"
+                     {::ex/type ::close-lra-failed} e)))))
 
-(m/=> cancel! [:=> [:cat db/DS domain/LRA] [:fn future?]])
+(m/=> cancel! [:=>
+               [:cat db/DatabaseComponent AsyncChannel domain/LRA]
+               [:maybe domain/LRACode]])
 (defn cancel!
-  [ds lra]
-  (future (->> (engine/cancel! lra)
-               (db/save! ds))))
+  [database lra-engine-input-chan {:lra/keys [code]
+                                   :as       lra}]
+  (if (cancellable-lra? lra)
+    (do
+      (db/set-status! (database) code :cancelling)
+      (async/go (async/put! lra-engine-input-chan {:type :cancel
+                                                   :lra  lra}))
+      code)
+    (throw (ex-info (format "Cancellable LRA not found with code %s" code)
+                    {::ex/type ::lra-not-found}))))
 
-(m/=> cancel-lra! [:=> [:cat db/DS domain/LRACode] [:or domain/LRACode domain/LRAErrorType]])
+(m/=> cancel-lra! [:=>
+                   [:cat db/DatabaseComponent AsyncChannel domain/LRACode]
+                   [:maybe domain/LRACode]])
 (defn cancel-lra!
-  [ds code]
-  (->> (lra-by-code ds code)
-       (then-call #(if (cancellable-lra? %)
-                     (do
-                       (db/set-status! ds (:lra/code %) :cancelling)
-                       (cancel! ds %))
-                     (fail-with {:msg (format "Cancellable LRA not found with code %s" code) :data {:type :resource-not-found}})))
-       (then (fn [_] code))
-       (else #(fail-with {:msg (format "LRA not found with code %s" code) :data {:type :resource-not-found} :cause %}))))
+  [database lra-engine-input-chan code]
+  (ex/try+ 
+   (->> (lra-by-code database code)
+        (cancel! database lra-engine-input-chan))
+   (catch Exception e
+     (throw (ex-info "Cancel LRA failed"
+                     {::ex/type ::cancel-lra-failed} e)))))

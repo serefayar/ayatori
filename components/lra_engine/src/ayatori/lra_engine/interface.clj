@@ -2,10 +2,6 @@
   (:require
    [ayatori.lra-engine.core :as engine]))
 
-(defn close!
-  [lra]
-  (engine/close! lra))
-
-(defn cancel!
-  [lra]
-  (engine/cancel! lra))
+(defn create
+  []
+  (engine/make-lraengine))

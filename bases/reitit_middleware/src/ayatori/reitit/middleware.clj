@@ -19,6 +19,7 @@
      (->> (prepare-options request options)
           (rm/lra-handler-async handler request respond raise)))))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (def create-lra-middleware
   {:name ::lra
    :wrap wrap-lra})
