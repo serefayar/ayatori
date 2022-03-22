@@ -3,63 +3,78 @@
    [ayatori.rest-api.response :as resp]
    [ayatori.lra.interface :as lra-service]
    [clojure.tools.logging :as log]
-   [fmnoise.flow :as flow :refer [then then-call else]]
-   [ayatori.lra-engine.interface :as lra-engine]))
+   [exoscale.ex :as ex]))
 
 (defn start-lra-handler
   [database]
   (fn [request respond _raise]
-    (->> (-> request :parameters :body)
-         (then-call #(lra-service/start-lra! (database) %))
-         (then #(do (log/info (format "LRA started with code %s" %))
-                    (respond (resp/created %))))
-         (else #(do (log/error %)
-                    (respond (resp/error %)))))))
+    (ex/try+
+     (->> (-> request :parameters :body)
+          (lra-service/start-lra! database)
+          (#(do (log/info (format "LRA started with code %s" %))
+                (respond (resp/created %)))))
+     (catch Exception e
+       (do (log/error (ex-message e))
+           (respond (resp/error e)))))))
 
 (defn join-to-lra-handler
   [database]
   (fn [request respond _raise]
-    (->> (-> request :parameters :body)
-         (then-call #(lra-service/join! (database) (-> request :path-params :code) %))
-         (then #(do
-                  (log/info (format "Participant joined to lra %s" %))
-                  (respond (resp/ok %))))
-         (else #(do (log/error %)
-                    (respond (resp/error %)))))))
+    (ex/try+ 
+     (->> (-> request :parameters :body)
+          (lra-service/join! database (-> request :path-params :code))
+          (#(do
+              (log/info (format "Participant joined to lra %s" %))
+              (respond (resp/ok %)))))
+     (catch Exception e
+       (do (log/error (ex-message e))
+           (respond (resp/error e)))))))
 
 (defn all-lra-handler
   [database]
   (fn [request respond _raise]
-    (->> (-> request :parameters :query :status)
-         (then-call #(lra-service/all-lra (database) %))
-         (then #(respond (resp/ok %)))
-         (else #(do (log/error %)
-                    (respond (resp/error %)))))))
+    (ex/try+
+     (->> (-> request :parameters :query :status)
+          (lra-service/all-lra database)
+          (resp/ok)
+          respond)
+     (catch Exception e
+       (do (log/error (ex-message e))
+           (respond (resp/error e)))))))
 
 (defn lra-handler
   [database]
   (fn [request respond _raise]
-    (->> (-> request :path-params :code)
-         (then-call #(lra-service/lra-by-code (database) %))
-         (then #(dissoc % :db/id))
-         (then #(respond (resp/ok %)))
-         (else #(do (log/error %)
-                    (respond (resp/error %)))))))
+    (ex/try+ 
+     (->> (-> request :path-params :code)
+          (lra-service/lra-by-code database)
+          (#(dissoc % :db/id))
+          (resp/ok)
+          respond)
+     (catch Exception e
+       (do (log/error (ex-message e))
+           (respond (resp/error e)))))))
 
 (defn close-lra-handler
-  [database]
+  [database lra-engine-input-chan]
   (fn [request respond _raise]
-    (->> (-> request :path-params :code)
-         (then-call #(lra-service/close-lra! (database) %))
-         (then #(respond (resp/ok %)))
-         (else #(do (log/error %)
-                    (respond (resp/error %)))))))
+    (ex/try+ 
+     (->> (-> request :path-params :code)
+          (lra-service/close-lra! database lra-engine-input-chan)
+          (resp/ok)
+          respond)
+     (catch Exception e
+       (do (log/error (ex-message e))
+           (respond (resp/error e)))))))
 
 (defn cancel-lra-handler
-  [database]
+  [database lra-engine-input-chan]
   (fn [request respond _raise]
-    (->> (-> request :path-params :code)
-         (then-call #(lra-service/cancel-lra! (database) %))
-         (then #(respond (resp/ok %)))
-         (else #(do (log/error %)
-                    (respond (resp/error %)))))))
+    (ex/try+ 
+     (->> (-> request :path-params :code)
+          (lra-service/cancel-lra! database lra-engine-input-chan)
+          (resp/ok)
+          respond)
+     (catch Exception e
+       (do (log/error (ex-message e))
+           (respond (resp/error e)))))))

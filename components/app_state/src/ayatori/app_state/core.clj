@@ -1,8 +1,8 @@
 (ns ayatori.app-state.core
   (:require
-   [com.stuartsierra.component :as component]))
+    [com.stuartsierra.component :as component]))
 
-(defrecord AppState [config database]
+(defrecord AppState [config database lra-engine]
   component/Lifecycle
   (start [this]
     this)
@@ -12,4 +12,5 @@
 (defn make-appstate
   [config]
   (component/using (map->AppState {:config config})
-                   [:database]))
+                   [:database
+                    :lra-engine-input-chan]))

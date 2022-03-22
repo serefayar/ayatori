@@ -1,8 +1,10 @@
 (ns ayatori.rest-api.main
   (:require [com.stuartsierra.component :as component]
+            [clojure.core.async :as async]
             [ayatori.web-server.interface :as web-server]
             [ayatori.app-state.interface :as app-state]
             [ayatori.database.interface :as database]
+            [ayatori.lra-engine.interface :as lra-engine]
             [ayatori.rest-api.routes :as routes]
             [aero.core :as aero]
             [clojure.java.io :as io])
@@ -10,7 +12,9 @@
 
 (defn new-system
   [config]
-  (component/system-map :database (database/create (-> config :database))
+  (component/system-map :lra-engine-input-chan (async/chan)
+                        :database (database/create (-> config :database))
+                        :lra-engine (lra-engine/create)
                         :app-state (app-state/create config)
                         :web-server (web-server/create #'routes/app-handler)))
 

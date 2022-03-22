@@ -31,9 +31,9 @@
                                 respond)
                             (catch Throwable _
                               (respond (resp/bad-request "bad request"))))))}}]
-     ["/compansate"
+     ["/compensate"
       {:lra {:id :order-s2
-             :type :compansate}
+             :type :compensate}
        :put {:handler (fn [request respond _]
                         (prn (format "service2 compansating lra %s" (-> request :lra-params :code)))
                         (respond (resp/response "ok")))}}]

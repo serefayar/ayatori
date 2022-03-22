@@ -55,10 +55,10 @@ Service 1
                                   ;; even if already called inside an LRA context
        :post {:parameters {:query {:num int?}}
               :handler a-handler}}]
-     ["/compansate"
+     ["/compensate"
       {:lra {:id :order ;; id of the context 
-             :type :compansate} ;; compansating action for :order context. 
-       :put {:handler compansate-handler}}]
+             :type :compensate} ;; compensating action for :order context. 
+       :put {:handler compensate-handler}}]
      ["/complete"
       {:lra {:id :order ;; id of the context
              :type :complete} ;; complete action for :order context
@@ -80,10 +80,10 @@ Service 2
                                ;; and 412 http status code returned to the caller
        :put {:parameters {:query {:num int?}}
              :handler a-handler}}]
-     ["/compansate"
+     ["/compensate"
       {:lra {:id :order-s2 ;; id of the context
-             :type :compansate} ;; compansating action for :order-s2 context. 
-       :put {:handler compansate-handler}}]
+             :type :compensate} ;; compensating action for :order-s2 context. 
+       :put {:handler compensate-handler}}]
      ["/complete"
       {:lra {:id :order-s2 ;; id of the context
              :type :complete} ;; complete action for :order-s2 context
@@ -105,10 +105,10 @@ Service 3
                                ;; and 412 http status code returned to the caller
        :put {:parameters {:query {:num int?}}
              :handler a-handler}}]
-     ["/compansate"
+     ["/compensate"
       {:lra {:id :order-s3
-             :type :compansate} ;; compansating action for :order-s3 context. 
-       :put {:handler compansate-handler}}]
+             :type :compensate} ;; compensating action for :order-s3 context. 
+       :put {:handler compensate-handler}}]
      ["/complete"
       {:lra {:id :order-s3
              :type :complete} ;; complete action for :order-s3 context
@@ -181,7 +181,7 @@ Service1 completed successfully
 6. complete request received from the LRA Coordinator
 
 
-### Compansate
+### Compensate
 
 let's say the last service has failed and the error code is returned. the result will look like this
 
@@ -190,7 +190,7 @@ service 1:
 ``` 
 "service1 param 1, lra context created with code a327a70b-65ae-4173-97a3-94f7f87994cf"  (1)
 INFO: cancelling lra a327a70b-65ae-4173-97a3-94f7f87994cf
-"service1 compansating lra a327a70b-65ae-4173-97a3-94f7f87994cf"                        (6)
+"service1 compensating lra a327a70b-65ae-4173-97a3-94f7f87994cf"                        (6)
 
 
 ```
@@ -198,14 +198,14 @@ INFO: cancelling lra a327a70b-65ae-4173-97a3-94f7f87994cf
 service 2:
 ``` 
 "service2 param 2, joined to lra context a327a70b-65ae-4173-97a3-94f7f87994cf"          (2)
-"service2 compansating lra a327a70b-65ae-4173-97a3-94f7f87994cf"                        (5)
+"service2 compensating lra a327a70b-65ae-4173-97a3-94f7f87994cf"                        (5)
 
 ```
 service 3:
 
 ``` 
 "service3 param 3, joined to lra context a327a70b-65ae-4173-97a3-94f7f87994cf"          (3) 
-"service3 compansating lra a327a70b-65ae-4173-97a3-94f7f87994cf"                        (4)
+"service3 compensating lra a327a70b-65ae-4173-97a3-94f7f87994cf"                        (4)
 
 
 ```
@@ -217,7 +217,7 @@ what's happened in order:
 3. Joined to LRA Context when received the request from service2. 
    service3 return http status 400
    call cancel on the LRA coordinator. 
-   LRA Coordinator call compansate handler in reverse order
+   LRA Coordinator call compensate handler in reverse order
 4. conpansate request received from the LRA coordinator
 5. conpansate request received from the LRA coordinator
 6. conpansate request received from the LRA coordinator
@@ -234,7 +234,7 @@ what's happened in order:
 - [ ] more Microprofile LRA Spec features
 - [ ] stabilize the api
 - [ ] better documentation
-- [ ] no tests, really? write some test, will you?
+- [x] ~~no tests, really? write some test, will you?~~
 
 
 

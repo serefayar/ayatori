@@ -18,5 +18,5 @@
   (invoke [_] datasource))
 
 (defn make-database
-  [{:keys [schema]}]
-  (map->Database {:schema schema}))
+  [{:keys [schema datasource]}]
+  (map->Database {:schema schema :datasource datasource}))

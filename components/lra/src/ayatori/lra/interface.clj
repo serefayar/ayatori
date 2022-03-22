@@ -1,27 +1,44 @@
 (ns ayatori.lra.interface
   (:require
-   [ayatori.lra.core :as service]))
+   [exoscale.ex :as ex]
+   [ayatori.lra.core :as service]
+   [ayatori.lra.db :as db]))
+
+(ex/derive ::lra-not-found ::ex/not-found)
+(ex/derive ::start-lra-failed ::ex/fault)
+(ex/derive ::start-nested-lra-failed ::ex/fault)
+(ex/derive ::update-lra-failed ::ex/fault)
+(ex/derive ::join-lra-failed ::ex/fault)
+
+
+(def DatabaseComponent
+  ;; check an instance of for now
+  db/DatabaseComponent)
 
 (defn all-lra
-  [ds status]
-  (service/all-lra ds status))
+  [database status]
+  (service/all-lra database status))
 
 (defn lra-by-code
-  [ds code]
-  (service/lra-by-code ds code))
+  [database code]
+  (service/lra-by-code database code))
+
+(defn update-lra!
+  [database lra]
+  (service/update-lra! database lra))
 
 (defn start-lra!
-  [ds data]
-  (service/start-lra! ds data))
+  [database data]
+  (service/start-lra! database data))
 
 (defn join!
-  [ds code participant]
-  (service/join! ds code participant))
+  [database code participant]
+  (service/join! database code participant))
 
 (defn close-lra!
-  [database code]
-  (service/close-lra! (database) code))
+  [database lra-engine-input-chan code]
+  (service/close-lra! database lra-engine-input-chan code))
 
 (defn cancel-lra!
-  [ds code]
-  (service/cancel-lra! ds code))
+  [database lra-engine-input-chan code]
+  (service/cancel-lra! database lra-engine-input-chan code))

@@ -1,2 +1,5 @@
-{:lint-as {fmnoise.flow/flet clojure.core/let}
+{:linters {:unresolved-symbol {:exclude [(clojure.test/is [thrown-ex-info-type?])
+                                         (clojure.test/are [thrown-ex-info-type?])
+                                         ]}}
+ :lint-as {exoscale.ex/try+ clojure.core/try}
  :config-paths ["configs/malli"]}
