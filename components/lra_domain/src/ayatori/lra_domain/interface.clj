@@ -71,7 +71,7 @@
       second ;; TODO: is there a better way?
       (mu/dissoc :db/id)
       (mu/dissoc :lra/time-limit)
-      (mu/dissoc :lra/participants)
+      ;;(mu/dissoc :lra/participants)
       (mu/dissoc :lra/acts)
       (mu/update-properties assoc :title "LRAData")))
 

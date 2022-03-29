@@ -1,6 +1,6 @@
 {:paths [] ; no src or resources
 
- :deps {org.clojure/clojure {:mvn/version "1.10.3"}
+ :deps {org.clojure/clojure {:mvn/version "1.11.0"}
 
         poly/component-app-state {:local/root "../../components/app_state"}
         poly/component-database {:local/root "../../components/database"}

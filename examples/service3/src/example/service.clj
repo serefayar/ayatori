@@ -2,6 +2,7 @@
   (:require [reitit.ring :as ring]
             [ring.util.response :as resp]
             [ring.adapter.jetty :as jetty]
+            [clj-http.client :as client]
             [muuntaja.core :as m]
             [reitit.coercion.spec]
             [reitit.ring.coercion :as rrc]
@@ -15,15 +16,23 @@
     ["/service3"
      ["/order"
       {:lra {:id :order-s3
-             :type :mandatory}
+             :type :requires-new}
        :put {:parameters {:query {:num int?}}
              :handler (fn [request respond _]
                         (let [lra (-> request :lra-params)
                               num (-> request :parameters :query :num)]
 
-                          (prn (format "service3 param %s, joined to lra context %s" num (:code lra)))
-
-                          (respond (resp/response (str (+ num 1))))))}}]
+                          (prn (format "service3 param %s, create new context with parent context %s, lra context %s" 
+                                       num (:parent lra) (:code lra)))
+                          (prn (-> request :lra-headers))
+                          (try
+                            (-> (client/put (format "http://localhost:7000/service4/order?num=%s" (+ num 1)) {:headers (-> request :lra-headers)})
+                                :body
+                                (resp/response)
+                                respond)
+                            (catch Throwable e
+                              (prn e)
+                              (respond (resp/bad-request "bad request"))))))}}]
      ["/compensate"
       {:lra {:id :order-s3
              :type :compensate}
