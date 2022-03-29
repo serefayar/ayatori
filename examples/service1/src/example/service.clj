@@ -19,12 +19,13 @@
                         (respond (resp/response "pong")))}}]
      ["/order"
       {:lra {:id :order
+             :client-id "service1"
              :type :requires-new}
        :post {:parameters {:query {:num int?}}
               :handler (fn [request respond _]
                          (let [lra (-> request :lra-params)
                                num (-> request :parameters :query :num)]
-
+                           
                            (prn (format "service1 param %s, lra context created with code %s" num (:code lra)))
 
                            (try
@@ -32,7 +33,8 @@
                                  :body
                                  (resp/response)
                                  respond)
-                             (catch Throwable _
+                             (catch Throwable e
+                               (prn e)
                                (respond (resp/bad-request "bad request"))))))}}]
      ["/compensate"
       {:lra {:id :order

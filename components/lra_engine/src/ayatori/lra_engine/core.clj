@@ -38,7 +38,12 @@
 (defn http-request!
   [method url & [opts]]
   (client/request
-   (merge {:method method :url url :socket-timeout 1000 :connection-timeout 1000 :content-type :json :accept :json} opts)))
+    (merge {:method method
+            :url url
+            :socket-timeout 1000
+            :connection-timeout 1000
+            :content-type :json
+            :accept :json} opts)))
 
 (m/=> find-by-act-type [:=>
                         [:cat domain/Participant domain/ActType]

@@ -2,7 +2,6 @@
   (:require [reitit.ring :as ring]
             [ring.util.response :as resp]
             [ring.adapter.jetty :as jetty]
-            [clj-http.client :as client]
             [muuntaja.core :as m]
             [reitit.coercion.spec]
             [reitit.ring.coercion :as rrc]
@@ -13,36 +12,29 @@
 (def app
   (ring/ring-handler
    (ring/router
-    ["/service2"
+    ["/service4"
      ["/order"
-      {:lra {:id :order-s2
+      {:lra {:id :order-s4
              :type :mandatory}
        :put {:parameters {:query {:num int?}}
              :handler (fn [request respond _]
                         (let [lra (-> request :lra-params)
                               num (-> request :parameters :query :num)]
 
-                          (prn (format "service2 param %s, joined to lra context %s" num (:code lra)))
+                          (prn (format "service4 param %s, joined to lra context %s" num (:code lra)))
 
-                          (try
-                            (-> (client/put (format "http://localhost:6000/service3/order?num=%s" (+ num 1)) {:headers (-> request :lra-headers)})
-                                :body
-                                (resp/response)
-                                respond)
-                            (catch Throwable e
-                              (prn e)
-                              (respond (resp/bad-request "bad request"))))))}}]
+                          (respond (resp/response (str (+ num 1))))))}}]
      ["/compensate"
-      {:lra {:id :order-s2
+      {:lra {:id :order-s4
              :type :compensate}
        :put {:handler (fn [request respond _]
-                        (prn (format "service2 compansating lra %s" (-> request :lra-params :code)))
+                        (prn (format "service4 compansating lra %s" (-> request :lra-params :code)))
                         (respond (resp/response "ok")))}}]
      ["/complete"
-      {:lra {:id :order-s2
+      {:lra {:id :order-s4
              :type :complete}
        :put {:handler (fn [request respond _]
-                        (prn (format "service2 completing lra %s" (-> request :lra-params :code)))
+                        (prn (format "service4 completing lra %s" (-> request :lra-params :code)))
                         (respond (resp/response "ok")))}}]]
     {:data {:coercion   reitit.coercion.spec/coercion
             :muuntaja   m/instance
@@ -55,5 +47,5 @@
    (ring/create-default-handler)))
 
 (defn -main []
-  (jetty/run-jetty #'app {:port 5000, :join? false, :async? true})
-  (println "service2 running in port 5000"))
+  (jetty/run-jetty #'app {:port 7000, :join? false, :async? true})
+  (println "service4 running in port 7000"))

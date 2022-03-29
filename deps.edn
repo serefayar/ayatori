@@ -18,7 +18,7 @@
                                 "bases/reitit_middleware/resources"
                                 "bases/rest_api/src"
                                 "bases/rest_api/resources"]
-                  :extra-deps  {org.clojure/clojure                 {:mvn/version "1.10.3"}
+                  :extra-deps  {org.clojure/clojure                 {:mvn/version "1.11.0"}
                                 org.clojure/core.async              {:mvn/version "1.5.648"}
                                 org.clojure/tools.logging           {:mvn/version "1.1.0"}
                                 ch.qos.logback/logback-classic      {:mvn/version "1.2.3"

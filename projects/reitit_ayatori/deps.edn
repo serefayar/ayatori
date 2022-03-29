@@ -1,6 +1,6 @@
 {:paths [] ; no src or resources
 
- :deps {org.clojure/clojure {:mvn/version "1.10.3"}
+ :deps {org.clojure/clojure {:mvn/version "1.11.0"}
 
         poly/components-ring-middleware {:local/root "../../components/ring_middleware"}
         poly/base-reitit-middleware {:local/root "../../bases/reitit_middleware"}}

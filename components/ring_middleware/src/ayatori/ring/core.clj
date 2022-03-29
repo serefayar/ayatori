@@ -25,13 +25,15 @@
                             :client-error
                             :server-error})
 
+(s/def ::client-id string?)
+
 (s/def ::lra-def (s/keys :req-un [::id ::type]
                          :opt-un [::end? ;; not implemented
                                   ::cancel-on ;; not implemented
                                   ::cancel-on-family ;; not implemented
-                                  ]))
+                                  ::client-id]))
 
-(s/def :act/type #{:compensate :complete})
+(s/def :act/type #{:compensate :complete :status})
 (s/def :act/url string?)
 (s/def ::act (s/keys :req [:act/type
                            :act/url]))
@@ -90,17 +92,17 @@
                              :act/url (format "%s%s" base-uri (:route lra-def))})))))
 
 (defn new-lra
-  [lra-context]
+  [{:keys [current-lra] :as lra-context}]
   (when lra-context
-    {:lra/client-id "aaa"
-     :lra/time-limit 0
-     :lra/parent-code ""
-     :lra/acts (create-acts lra-context)}))
+    {:lra/client-id   (:id current-lra)
+     :lra/time-limit  0 ;; not implemented
+     :lra/parent-code (:code lra-context)
+     :lra/acts        (create-acts lra-context)}))
 
 (defn new-participant
-  [lra-context]
+  [{:keys [current-lra] :as lra-context}]
   (when lra-context
-    {:participant/client-id "bbb"
+    {:participant/client-id (:id current-lra)
      :participant/acts (create-acts lra-context)}))
 
 (defn new-request
@@ -154,10 +156,14 @@
        (add-lra-params request lra-context)))
 
 (defn start!
-  [request {:keys [coordinator-url] :as lra-context}]
+  [request {:keys [coordinator-url code] :as lra-context}]
   (some->> (new-lra lra-context)
            (register-request! coordinator-url)
-           (#(add-lra-params request lra-context {"long-running-action" %}))))
+           (assoc {} "long-running-action")
+           (#(if (not (string/blank? code))
+               (assoc % "long-running-action-parent" code)
+               %))
+           (#(add-lra-params request lra-context %))))
 
 (defn join!
   [request {:keys [coordinator-url code] :as lra-context}]
@@ -212,8 +218,8 @@
     (let [request' (header-lra-params request current-lra)
 
           lra-context (merge options
-                             {:code (-> request' :lra-params :code)
-                              :base-uri (base-url request)
+                             {:code     (-> request' :lra-params :code str)
+                              :base-uri (base-url request')
                               :lra-defs (find-lra-defs router (:id current-lra))})]
       (lra-request-handler request' lra-context))
       ;; else

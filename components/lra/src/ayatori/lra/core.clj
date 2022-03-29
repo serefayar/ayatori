@@ -133,7 +133,7 @@
   (ex/try+
    (->> (->toplevel-participant lra)
         (update parent :lra/participants conj)
-        (new-lra! database)
+        (db/save! (database))
         :lra/code
         (assoc {} :lra-code (:lra/code lra) :parent-code))
    (catch Exception e
@@ -224,7 +224,7 @@
                    [:maybe domain/LRACode]])
 (defn cancel-lra!
   [database lra-engine-input-chan code]
-  (ex/try+ 
+  (ex/try+
    (->> (lra-by-code database code)
         (cancel! database lra-engine-input-chan))
    (catch Exception e
