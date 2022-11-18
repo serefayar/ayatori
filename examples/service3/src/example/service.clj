@@ -22,11 +22,11 @@
                         (let [lra (-> request :lra-params)
                               num (-> request :parameters :query :num)]
 
-                          (prn (format "service3 param %s, create new context with parent context %s, lra context %s" 
+                          (prn (format "service3 param %s, create new context with parent context %s, lra context %s"
                                        num (:parent lra) (:code lra)))
-                          (prn (-> request :lra-headers))
+;;                          (prn (-> request :lra-headers))
                           (try
-                            (-> (client/put (format "http://localhost:7000/service4/order?num=%s" (+ num 1)) {:headers (-> request :lra-headers)})
+                            (-> (client/put (format "http://localhost:4003/service4/order?num=%s" (+ num 1)) {:headers (-> request :lra-headers)})
                                 :body
                                 (resp/response)
                                 respond)
@@ -37,13 +37,13 @@
       {:lra {:id :order-s3
              :type :compensate}
        :put {:handler (fn [request respond _]
-                        (prn (format "service3 compansating lra %s" (-> request :lra-params :code)))
+                        (prn (format "service3 compansating lra %s on %s" (-> request :lra-params :code) (java.time.Instant/now)))
                         (respond (resp/response "ok")))}}]
      ["/complete"
       {:lra {:id :order-s3
              :type :complete}
        :put {:handler (fn [request respond _]
-                        (prn (format "service3 completing lra %s" (-> request :lra-params :code)))
+                        (prn (format "service3 completing lra %s on %s" (-> request :lra-params :code) (java.time.Instant/now)))
                         (respond (resp/response "ok")))}}]]
     {:data {:coercion   reitit.coercion.spec/coercion
             :muuntaja   m/instance
@@ -56,5 +56,5 @@
    (ring/create-default-handler)))
 
 (defn -main []
-  (jetty/run-jetty #'app {:port 6000, :join? false, :async? true})
-  (println "service3 running in port 6000"))
+  (jetty/run-jetty #'app {:port 4002, :join? false, :async? true})
+  (println "service3 running in port 4002"))

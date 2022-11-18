@@ -11,6 +11,7 @@
     (ex/try+
      (->> (-> request :parameters :body)
           (lra-service/start-lra! database)
+          :lra/code
           (#(do (log/info (format "LRA started with code %s" %))
                 (respond (resp/created %)))))
      (catch Exception e
@@ -20,9 +21,10 @@
 (defn join-to-lra-handler
   [database]
   (fn [request respond _raise]
-    (ex/try+ 
+    (ex/try+
      (->> (-> request :parameters :body)
           (lra-service/join! database (-> request :path-params :code))
+          :lra/code
           (#(do
               (log/info (format "Participant joined to lra %s" %))
               (respond (resp/ok %)))))
@@ -45,7 +47,7 @@
 (defn lra-handler
   [database]
   (fn [request respond _raise]
-    (ex/try+ 
+    (ex/try+
      (->> (-> request :path-params :code)
           (lra-service/lra-by-code database)
           (#(dissoc % :db/id))
@@ -58,7 +60,7 @@
 (defn close-lra-handler
   [database lra-engine-input-chan]
   (fn [request respond _raise]
-    (ex/try+ 
+    (ex/try+
      (->> (-> request :path-params :code)
           (lra-service/close-lra! database lra-engine-input-chan)
           (resp/ok)
@@ -70,7 +72,7 @@
 (defn cancel-lra-handler
   [database lra-engine-input-chan]
   (fn [request respond _raise]
-    (ex/try+ 
+    (ex/try+
      (->> (-> request :path-params :code)
           (lra-service/cancel-lra! database lra-engine-input-chan)
           (resp/ok)

@@ -9,7 +9,6 @@
    [clojure.core.async :as async])
   (:import (clojure.core.async.impl.channels ManyToManyChannel)))
 
-
 (def AsyncChannel
   ;; check an instance of for now
   [:fn (fn [v] (instance? ManyToManyChannel v))])
@@ -104,8 +103,10 @@
 (defn update-lra!
   [database lra]
   (ex/try+
-   (->> (lra-by-code database (:lra/code lra))
-        (db/save! (database)))
+   (do
+     (lra-by-code database (:lra/code lra))
+     (db/save! (database) lra)
+     (lra-by-code database (:lra/code lra)))
    (catch Exception e
      (throw (ex-info "Update LRA failed"
                      {::ex/type ::update-lra-failed} e)))))
@@ -117,50 +118,47 @@
   [database data]
   (ex/try+
    (->> (data->lra data)
-        (db/save! (database)))
+        (db/save! (database))
+        (db/find-by-code (database)))
    (catch Exception e
      (throw (ex-info "Createing new LRA failed"
                      {::ex/type ::start-lra-failed} e)))))
 
-
 (m/=> new-nested-lra! [:=>
                        [:cat db/DatabaseComponent domain/LRA domain/LRA]
-                       [:maybe [:map [:parent-code domain/LRACode]
-                                [:lra-code domain/LRACode]]]])
+                       [:maybe domain/LRA]])
 
 (defn new-nested-lra!
   [database parent lra]
   (ex/try+
-   (->> (->toplevel-participant lra)
-        (update parent :lra/participants conj)
-        (db/save! (database))
-        :lra/code
-        (assoc {} :lra-code (:lra/code lra) :parent-code))
+   (do
+     (->> (->toplevel-participant lra)
+          (update parent :lra/participants conj)
+          (db/save! (database)))
+     (db/find-by-code (database) (:lra/code lra)))
    (catch Exception e
      (throw (ex-info "Creating nested LRA failed"
                      {::ex/type ::start-nested-lra-failed} e)))))
 
 (m/=> start-lra! [:=>
                   [:cat db/DatabaseComponent domain/StartLRAData]
-                  [:maybe domain/LRACode]])
+                  [:maybe domain/LRA]])
 (defn start-lra!
   [database data]
   (ex/try+
    (if (string/blank? (:lra/parent-code data))
-     (-> (new-lra! database data)
-         :lra/code)
+     (new-lra! database data)
      ;;else
      (let [parent (lra-by-code database (:lra/parent-code data))
            lra    (new-lra! database data)]
-       (-> (new-nested-lra! database parent lra)
-           :lra-code)))
+       (new-nested-lra! database parent lra)))
    (catch Exception e
      (throw (ex-info "Start LRA failed"
                      {::ex/type ::start-lra-failed} e)))))
 
 (m/=> join! [:=>
              [:cat db/DatabaseComponent domain/LRACode domain/JoinParticipantData]
-             [:maybe domain/LRACode]])
+             [:maybe domain/LRA]])
 (defn join!
   [database code participant]
   (ex/try+
@@ -168,11 +166,11 @@
         (#(if (joinable-lra? %)
             (->> (data->participant participant)
                  (update % :lra/participants conj)
-                 (db/save! (database)))
+                 (db/save! (database))
+                 (db/find-by-code (database)))
             ;; else
             (throw (ex-info (format "Joinable LRA not found with code %s" code)
-                            {::ex/type ::lra-not-found}))))
-        :lra/code)
+                            {::ex/type ::lra-not-found})))))
    (catch Exception e
      (throw (ex-info (format "Join failed with code %s" code)
                      {::ex/type ::join-lra-failed} e)))))
@@ -185,9 +183,10 @@
                                    :as       lra}]
   (if (closable-lra? lra)
     (do
-      (db/set-status! (database) code :closing)
-      (async/go (async/put! lra-engine-input-chan {:type :close
-                                                   :lra  lra}))
+      (->> (db/save! (database) (assoc lra :lra/status :processing))
+           (db/find-by-code (database)) 
+           (#(async/go (async/put! lra-engine-input-chan {:type :close
+                                                          :lra  %}))))
       code)
     (throw (ex-info (format "Closable LRA not found with code %s" code)
                     {::ex/type ::lra-not-found}))))
@@ -212,9 +211,10 @@
                                    :as       lra}]
   (if (cancellable-lra? lra)
     (do
-      (db/set-status! (database) code :cancelling)
-      (async/go (async/put! lra-engine-input-chan {:type :cancel
-                                                   :lra  lra}))
+      (->> (db/save! (database) (assoc lra :lra/status :processing))
+           (db/find-by-code (database))
+           (#(async/go (async/put! lra-engine-input-chan {:type :cancel
+                                                          :lra  %}))))
       code)
     (throw (ex-info (format "Cancellable LRA not found with code %s" code)
                     {::ex/type ::lra-not-found}))))

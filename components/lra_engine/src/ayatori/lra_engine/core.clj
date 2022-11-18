@@ -38,12 +38,12 @@
 (defn http-request!
   [method url & [opts]]
   (client/request
-    (merge {:method method
-            :url url
-            :socket-timeout 1000
-            :connection-timeout 1000
-            :content-type :json
-            :accept :json} opts)))
+   (merge {:method method
+           :url url
+           :socket-timeout 1000
+           :connection-timeout 1000
+           :content-type :json
+           :accept :json} opts)))
 
 (m/=> find-by-act-type [:=>
                         [:cat domain/Participant domain/ActType]
@@ -53,6 +53,8 @@
   [participant act-type]
   (first (filter #(= act-type (:act/type %)) (:participant/acts participant))))
 
+
+(declare process-message!)
 ;;
 ;; cancel LRA
 ;;
@@ -78,7 +80,6 @@
       (log/infof "No Participant found to compensate %s" lra-code)
       participant)))
 
-
 (m/=> compensate-nested-participant! [:=>
                                       [:cat lra/DatabaseComponent domain/Participant]
                                       domain/Participant])
@@ -86,7 +87,9 @@
   [database {:participant/keys [lra-code] :as participant}]
   (ex/try+
    (some->> (lra/lra-by-code database lra-code)
-            (cancel! database)
+            (#(assoc % :lra/status :processing))
+            (lra/update-lra! database)
+            (process-message! database :cancel)
             (#(if (= :cancelled (:lra/status %))
                 :compensated
                 :failed-to-compensate))
@@ -140,8 +143,6 @@
 ;; close LRA
 ;;
 
-(declare close!)
-
 (m/=> complete-participant! [:=>
                              [:cat domain/LRACode domain/Participant]
                              domain/Participant])
@@ -161,7 +162,6 @@
       (log/infof "No Participant found to complete %s" lra-code)
       participant)))
 
-
 (m/=> complete-nested-participant! [:=>
                                     [:cat lra/DatabaseComponent domain/Participant]
                                     domain/Participant])
@@ -169,12 +169,19 @@
 (defn complete-nested-participant!
   [database {:participant/keys [lra-code] :as participant}]
   (ex/try+
-   (some->> (lra/lra-by-code database lra-code)
-            (close! database)
-            (#(if (= :closed (:lra/status %))
-                :completed
-                :failed-to-complete))
-            (assoc participant :participant/status))
+   (let [lra (lra/lra-by-code database lra-code)]
+     (if (= :active (:lra/status lra)) 
+       (some->> lra
+                (#(assoc % :lra/status :processing))
+                (lra/update-lra! database)
+                (process-message! database :close)
+                (#(if (= :closed (:lra/status %))
+                    :completed
+                    :failed-to-complete))
+                (assoc participant :participant/status))
+       ;; else
+       (log/infof "nested participant with lra code %s already closed" lra-code)))
+   
    (catch Exception e
      (do
        (log/info (format "Found to complete %s nested participant" lra-code) e)
@@ -185,7 +192,7 @@
                  [:vector domain/Participant]])
 
 (defn complete!
-  [database lra-code participants]
+  [database lra-code participants] 
   (->> participants
        (map #(if (:participant/top-level? %)
                (complete-nested-participant! database %)
@@ -197,7 +204,7 @@
                   EngineState])
 
 (defn close-lra!
-  [{:keys [database lra] :as fsm}]
+  [{:keys [database lra] :as fsm}] 
   (->> (complete! database (:lra/code lra) (:lra/participants lra))
        (assoc-in fsm [:lra :lra/participants])))
 
@@ -223,7 +230,8 @@
 ;; state
 ;;
 (def lra-states
-  [{::tk/name        :active
+  [{::tk/name        :active}
+   {::tk/name        :processing
     ::tk/transitions [{::tk/on :close ::tk/to :closing ::tk/actions [:close-lra]}
                       {::tk/on :cancel ::tk/to :cancelling ::tk/actions [:cancel-lra]}]}
    {::tk/name        :cancelling
@@ -313,7 +321,7 @@
       (async/go-loop []
         (async/alt!
           input-chan
-          ([{:keys [type lra]}]
+          ([{:keys [type lra]}] 
            (process-message! database type lra)
            (recur))
           stop-chan
