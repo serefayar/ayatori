@@ -29,7 +29,7 @@
                            (prn (format "service1 param %s, lra context created with code %s" num (:code lra)))
 
                            (try
-                             (-> (client/put (format "http://localhost:5000/service2/order?num=%s" (str (+ num 1))) {:headers (-> request :lra-headers)})
+                             (-> (client/put (format "http://localhost:4001/service2/order?num=%s" (str (+ num 1))) {:headers (-> request :lra-headers)})
                                  :body
                                  (resp/response)
                                  respond)
@@ -40,13 +40,13 @@
       {:lra {:id :order
              :type :compensate}
        :put {:handler (fn [request respond _]
-                        (prn (format "service1 compansating lra %s" (-> request :lra-params :code)))
+                        (prn (format "service1 compansating lra %s on %s" (-> request :lra-params :code) (java.time.Instant/now)))
                         (respond (resp/response "ok")))}}]
      ["/complete"
       {:lra {:id :order
              :type :complete}
        :put {:handler (fn [request respond _]
-                        (prn (format "service1 completing lra %s" (-> request :lra-params :code)))
+                        (prn (format "service1 completing lra %s on %s" (-> request :lra-params :code) (java.time.Instant/now)))
                         (respond (resp/response "ok")))}}]]
     {:data {:coercion   reitit.coercion.spec/coercion
             :muuntaja   m/instance

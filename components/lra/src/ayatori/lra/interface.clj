@@ -10,7 +10,6 @@
 (ex/derive ::update-lra-failed ::ex/fault)
 (ex/derive ::join-lra-failed ::ex/fault)
 
-
 (def DatabaseComponent
   ;; check an instance of for now
   db/DatabaseComponent)

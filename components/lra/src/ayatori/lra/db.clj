@@ -7,7 +7,6 @@
    [ayatori.database.interface :as db])
   (:import (clojure.lang Atom)))
 
-
 (ex/derive ::generic-db-error ::ex/fault)
 
 (def DatabaseComponent
@@ -33,13 +32,13 @@
 
 (m/=> save! [:=>
              [:cat DS domain/LRA]
-             domain/LRA])
+             domain/LRACode])
 
 (defn save!
   [ds lra]
   (ex/try+
    (d/transact! ds [lra])
-   lra
+   (:lra/code lra)
    (catch Exception e
      (throw (ex-info "unkown error"
                      {::ex/type ::generic-db-error} e)))))

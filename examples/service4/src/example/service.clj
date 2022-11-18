@@ -28,13 +28,13 @@
       {:lra {:id :order-s4
              :type :compensate}
        :put {:handler (fn [request respond _]
-                        (prn (format "service4 compansating lra %s" (-> request :lra-params :code)))
+                        (prn (format "service4 compansating lra %s on %s" (-> request :lra-params :code) (java.time.Instant/now)))
                         (respond (resp/response "ok")))}}]
      ["/complete"
       {:lra {:id :order-s4
              :type :complete}
        :put {:handler (fn [request respond _]
-                        (prn (format "service4 completing lra %s" (-> request :lra-params :code)))
+                        (prn (format "service4 completing lra %s on %s" (-> request :lra-params :code) (java.time.Instant/now)))
                         (respond (resp/response "ok")))}}]]
     {:data {:coercion   reitit.coercion.spec/coercion
             :muuntaja   m/instance
@@ -47,5 +47,5 @@
    (ring/create-default-handler)))
 
 (defn -main []
-  (jetty/run-jetty #'app {:port 7000, :join? false, :async? true})
-  (println "service4 running in port 7000"))
+  (jetty/run-jetty #'app {:port 4003, :join? false, :async? true})
+  (println "service4 running in port 4003"))

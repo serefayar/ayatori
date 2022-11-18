@@ -25,7 +25,7 @@
                           (prn (format "service2 param %s, joined to lra context %s" num (:code lra)))
 
                           (try
-                            (-> (client/put (format "http://localhost:6000/service3/order?num=%s" (+ num 1)) {:headers (-> request :lra-headers)})
+                            (-> (client/put (format "http://localhost:4002/service3/order?num=%s" (+ num 1)) {:headers (-> request :lra-headers)})
                                 :body
                                 (resp/response)
                                 respond)
@@ -36,13 +36,13 @@
       {:lra {:id :order-s2
              :type :compensate}
        :put {:handler (fn [request respond _]
-                        (prn (format "service2 compansating lra %s" (-> request :lra-params :code)))
+                        (prn (format "service2 compansating lra %s on %s" (-> request :lra-params :code) (java.time.Instant/now)))
                         (respond (resp/response "ok")))}}]
      ["/complete"
       {:lra {:id :order-s2
              :type :complete}
        :put {:handler (fn [request respond _]
-                        (prn (format "service2 completing lra %s" (-> request :lra-params :code)))
+                        (prn (format "service2 completing lra %s on %s" (-> request :lra-params :code) (java.time.Instant/now)))
                         (respond (resp/response "ok")))}}]]
     {:data {:coercion   reitit.coercion.spec/coercion
             :muuntaja   m/instance
@@ -55,5 +55,5 @@
    (ring/create-default-handler)))
 
 (defn -main []
-  (jetty/run-jetty #'app {:port 5000, :join? false, :async? true})
-  (println "service2 running in port 5000"))
+  (jetty/run-jetty #'app {:port 4001, :join? false, :async? true})
+  (println "service2 running in port 4001"))

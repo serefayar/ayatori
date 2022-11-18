@@ -10,7 +10,7 @@
 (def LRAStatus
   [:enum {:decode/string '#(-> % name clojure.string/lower-case keyword)
           :decode/json   '#(-> % name clojure.string/lower-case keyword)}
-   :active :cancelled :cancelling :closed :mark-to-close :closing :failed-to-cancel :failed-to-close])
+   :active :processing :cancelled :cancelling :closed :mark-to-close :closing :failed-to-cancel :failed-to-close])
 
 (def ParticipantStatus
   [:enum {:decode/string '#(-> % name clojure.string/lower-case keyword)
@@ -26,7 +26,6 @@
   [:map
    [:act/type ActType]
    [:act/url [:string]]])
-
 
 (def Participant
   [:and
