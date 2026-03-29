@@ -25,26 +25,28 @@
    [:model :string]
    [:base-url {:optional true} :string]])
 
-(def LLMNodeWithClient
+(def LLMNodeConfig
   [:map
-   [:type [:= :llm]]
-   [:client LLMClientSpec]
    [:prompt {:optional true} :string]
    [:tools {:optional true} [:vector :map]]
    [:stream {:optional true} :boolean]
    [:response-format {:optional true} :map]
    [:max-turns {:optional true} :int]])
 
+(def LLMNodeWithClient
+  [:and
+   [:map
+    [:type [:= :llm]]
+    [:client LLMClientSpec]]
+   LLMNodeConfig])
+
 (def LLMNodeWithInvokeFn
-  [:map
-   [:type [:= :llm]]
-   [:invoke-fn fn?]
-   [:client {:optional true} :map]
-   [:prompt {:optional true} :string]
-   [:tools {:optional true} [:vector :map]]
-   [:stream {:optional true} :boolean]
-   [:response-format {:optional true} :map]
-   [:max-turns {:optional true} :int]])
+  [:and
+   [:map
+    [:type [:= :llm]]
+    [:invoke-fn fn?]
+    [:client {:optional true} :map]]
+   LLMNodeConfig])
 
 (def LLMNode
   [:or LLMNodeWithClient LLMNodeWithInvokeFn])
