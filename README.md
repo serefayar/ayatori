@@ -1,4 +1,5 @@
 # Ayatori
+[![Run tests](https://github.com/serefayar/ayatori/actions/workflows/test.yml/badge.svg)](https://github.com/serefayar/ayatori/actions/workflows/test.yml)
 
 <img src="./resources/ayatori.png" align="right" height="150" />
 
