@@ -346,14 +346,16 @@
       (aya/stop! sys))))
 
 (deftest unresolved-dep-test
-  (testing "missing wiring for dep throws at start"
+  (testing "missing wiring for dep throws at runtime"
     (let [agent (aya/make-agent {:nodes {:a (fn [_] :ok)}
                                  :edges {:a :missing}
                                  :deps  [:missing]
-                                 :caps  {:main {:entry :a}}})]
+                                 :caps  {:main {:entry :a}}})
+          sys (-> (aya/make-system {:agents {:test agent}})
+                  aya/start!)]
       (is (thrown-with-msg? Exception #"Unresolved dep"
-                            (-> (aya/make-system {:agents {:test agent}})
-                                aya/start!))))))
+                            (deref! (aya/run sys :test :main {}))))
+      (aya/stop! sys))))
 
 (deftest rewire-test
   (testing "rewire! changes dep target at runtime"

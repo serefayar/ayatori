@@ -177,7 +177,9 @@
    [:agents [:map-of :keyword BoundGraph]]
    [:middleware {:optional true} [:vector :any]]
    [:wiring {:optional true} [:map-of :keyword [:map-of :keyword WiringTarget]]]
-   [:store {:optional true} StoreConfig]])
+   [:store {:optional true} StoreConfig]
+   [:host {:optional true} :string]
+   [:port {:optional true} :int]])
 
 
 ;; Graph Compilation
@@ -211,11 +213,13 @@
 (defn make-system
   "Creates an agent system from a config map."
   {:malli/schema [:=> [:cat SystemConfig] :map]}
-  [{:keys [agents middleware wiring store]}]
+  [{:keys [agents middleware wiring store host port]}]
   {:agents agents
    :middleware (or middleware [])
-   :wiring (or wiring {})
+   :wiring (atom (or wiring {}))
    :store (if store (store/make-store store) (store/make-store))
+   :host (or host "localhost")
+   :port (or port 9000)
    :state (atom {:status :stopped})})
 
 (defn- validate-schema! [schema data direction]
@@ -224,109 +228,65 @@
                     {:errors   (me/humanize (m/explain schema data))
                      direction data}))))
 
-(defn- build-registry-entry [agent-key cap-key cap-config]
-  {:agent agent-key
-   :cap cap-key
-   :entry (:entry cap-config)
-   :input-schema (:input cap-config)
-   :output-schema (:output cap-config)})
-
-(defn- register-cap! [registry agent-key cap-key cap-config]
-  (let [ref (cap/make-ref)
-        uri (cap/make-uri "local" -1 ref)]
-    (swap! registry assoc ref (build-registry-entry agent-key cap-key cap-config))
-    (cap/make-cap-handle uri
-                         {:agent agent-key
-                          :cap cap-key
-                          :input (:input cap-config)
-                          :output (:output cap-config)})))
-
-(defn- build-cap-map [agents registry]
+(defn- build-cap-map [agents sys-host sys-port]
   (reduce-kv
    (fn [acc agent-key agent]
      (let [caps (get-in agent [:compiled :caps])
            cap-handles (reduce-kv
                         (fn [eacc cap-key cap-config]
-                          (assoc eacc cap-key
-                                 (register-cap! registry agent-key cap-key cap-config)))
+                          (let [uri (cap/make-uri sys-host sys-port agent-key cap-key)]
+                            (assoc eacc cap-key
+                                   (cap/make-cap-handle uri
+                                                        {:agent agent-key
+                                                         :cap cap-key
+                                                         :input (:input cap-config)
+                                                         :output (:output cap-config)}))))
                         {} caps)]
        (assoc acc agent-key cap-handles)))
    {} agents))
 
-(defn- find-registry-ref [registry agent-key cap-key]
-  (some (fn [[ref entry]]
-          (when (and (= agent-key (:agent entry))
-                     (= cap-key (:cap entry)))
-            ref))
-        @registry))
+(defn- local-uri? [uri-host uri-port sys-host sys-port]
+  (and (= uri-host sys-host) (= uri-port sys-port)))
 
-(defn- resolve-cap [registry uri]
-  (let [{:keys [ref]} (cap/parse-uri uri)]
-    (or (get @registry ref)
-        (throw (ex-info "Unknown capability ref" {:uri uri :ref ref})))))
-
-(defn- make-resolver [sys registry]
+(defn- make-resolver [sys]
   (fn resolver
     ([uri input] (resolver uri input {}))
     ([uri input caller-opts]
-     (let [reg-entry (resolve-cap registry uri)
-           {:keys [agent entry input-schema]} reg-entry
-           ag (get (:agents sys) agent)]
-       (when input-schema
-         (validate-schema! input-schema input :input))
-       (executor/execute ag (:store sys) input
-                         (merge (select-keys caller-opts [:trace-id :span-id :path])
-                                {:middleware (:middleware sys)
-                                 :agent      agent
-                                 :entry      entry
-                                 :resolver   resolver}))))))
-
-(defn- inject-dep [registry wiring agent-key dep-key]
-  (let [target (get-in wiring [agent-key dep-key])]
-    (when-not target
-      (throw (ex-info "Unresolved dep: no wiring found"
-                      {:agent agent-key
-                       :dep dep-key
-                       :available-wiring (keys (get wiring agent-key))})))
-    (let [[target-agent target-cap] target
-          ref (find-registry-ref registry target-agent target-cap)]
-      (when-not ref
-        (throw (ex-info "Wiring target not found in registry"
-                        {:agent agent-key
-                         :dep dep-key
-                         :target [target-agent target-cap]})))
-      (cap/make-cap-handle (cap/make-uri "local" -1 ref) {}))))
-
-(defn- inject-all-deps [agents registry wiring]
-  (reduce-kv
-   (fn [acc agent-key agent]
-     (let [deps (get-in agent [:compiled :deps])]
-       (if (seq deps)
-         (let [dep-nodes (reduce (fn [m dep-key]
-                                   (assoc m dep-key
-                                          (inject-dep registry wiring agent-key dep-key)))
-                                 {} deps)]
-           (assoc acc agent-key (update agent :nodes merge dep-nodes)))
-         (assoc acc agent-key agent))))
-   {} agents))
+     (let [{:keys [host port agent cap]} (cap/parse-uri uri)]
+       (if (local-uri? host port (:host sys) (:port sys))
+         (let [ag (get (:agents sys) agent)
+               cap-config (get-in ag [:compiled :caps cap])]
+           (when-not ag
+             (throw (ex-info "Agent not found" {:agent agent})))
+           (when-not cap-config
+             (throw (ex-info "Cap not found" {:agent agent :cap cap})))
+           (when (:input cap-config)
+             (validate-schema! (:input cap-config) input :input))
+           (executor/execute ag (:store sys) input
+                             (merge (select-keys caller-opts [:trace-id :span-id :path])
+                                    {:middleware (:middleware sys)
+                                     :agent agent
+                                     :entry (:entry cap-config)
+                                     :resolver resolver
+                                     :wiring @(:wiring sys)
+                                     :agents (:agents sys)
+                                     :sys-host (:host sys)
+                                     :sys-port (:port sys)})))
+         (throw (ex-info "Remote execution not yet supported" {:host host :port port})))))))
 
 (defn start!
-  "Starts the system. Creates ref registry, per-cap CapHandles, resolves deps."
+  "Starts the system. Builds cap-map and resolver."
   {:malli/schema [:=> [:cat :map] :map]}
   [sys]
   (when @active-system
     (throw (ex-info "A system is already running. Stop it before starting a new one." {})))
-  (let [registry (atom {})
-        resolver (make-resolver sys registry)
-        cap-map  (build-cap-map (:agents sys) registry)
-        agents   (inject-all-deps (:agents sys) registry (:wiring sys))
-        started  (assoc sys :agents agents)]
+  (let [cap-map (build-cap-map (:agents sys) (:host sys) (:port sys))
+        resolver (make-resolver sys)]
     (reset! (:state sys) {:status :running
                           :caps cap-map
-                          :registry registry
                           :resolver resolver})
-    (reset! active-system started)
-    started))
+    (reset! active-system sys)
+    sys))
 
 (defn stop!
   "Stops the system."
@@ -343,25 +303,18 @@
   (:caps @(:state sys)))
 
 (defn rewire!
-  "Changes dep wiring at runtime. Updates registry so next execution uses new target."
+  "Changes dep wiring at runtime. Next dep resolution uses new target."
   {:malli/schema [:=> [:cat :map :keyword [:map-of :keyword WiringTarget]] :nil]}
   [sys agent-key dep-bindings]
   (when-not (= :running (:status @(:state sys)))
     (throw (ex-info "System not started" {:status (:status @(:state sys))})))
-  (let [registry (:registry @(:state sys))]
-    (doseq [[dep-key [target-agent target-cap]] dep-bindings]
-      (let [agent (get (:agents sys) agent-key)
-            dep-ch (get (:nodes agent) dep-key)]
-        (when-not (cap/cap-handle? dep-ch)
-          (throw (ex-info "Cannot rewire: not a dep node"
-                          {:agent agent-key :node dep-key})))
-        (let [old-ref (:ref (cap/parse-uri (cap/cap-uri dep-ch)))
-              new-ref (find-registry-ref registry target-agent target-cap)]
-          (when-not new-ref
-            (throw (ex-info "Rewire target not found"
-                            {:target [target-agent target-cap]})))
-          (let [new-entry (get @registry new-ref)]
-            (swap! registry assoc old-ref new-entry)))))))
+  (doseq [[dep-key [target-agent target-cap]] dep-bindings]
+    (let [target-ag (get (:agents sys) target-agent)]
+      (when-not target-ag
+        (throw (ex-info "Rewire target agent not found" {:agent target-agent})))
+      (when-not (get-in target-ag [:compiled :caps target-cap])
+        (throw (ex-info "Rewire target cap not found" {:agent target-agent :cap target-cap}))))
+    (swap! (:wiring sys) assoc-in [agent-key dep-key] [target-agent target-cap])))
 
 (defn- lookup-cap [sys agent-key cap-key]
   (let [agent (get (:agents sys) agent-key)]
@@ -402,5 +355,9 @@
                            :agent      agent-key
                            :cap        cap-key
                            :entry      (:entry cap)
-                           :resolver   (:resolver @(:state sys))})
+                           :resolver   (:resolver @(:state sys))
+                           :wiring     @(:wiring sys)
+                           :agents     (:agents sys)
+                           :sys-host   (:host sys)
+                           :sys-port   (:port sys)})
         (wrap-output-validation (:output cap)))))

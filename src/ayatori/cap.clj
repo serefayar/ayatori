@@ -3,32 +3,27 @@
    [java.net URI]))
 
 (defn make-uri
-  "Constructs a capability URI: ayatori://host:port/c/ref"
-  [host port ref]
-  (str "ayatori://" host ":" port "/c/" ref))
+  "Constructs a capability URI: ayatori://host:port/c/agent/cap"
+  [host port agent-name cap-name]
+  (format "ayatori://%s:%d/c/%s/%s" host port (name agent-name) (name cap-name)))
 
 (defn parse-uri
-  "Parses a capability URI string into {:host :port :ref}."
+  "Parses a capability URI string into {:host :port :agent :cap}."
   [uri-str]
   (try
     (let [u (URI. uri-str)]
       (when-not (= "ayatori" (.getScheme u))
         (throw (ex-info "Invalid scheme" {:uri uri-str :scheme (.getScheme u)})))
       (let [path (.getPath u)
-            ref  (when (and path (.startsWith path "/c/"))
-                   (subs path 3))]
-        (when-not ref
-          (throw (ex-info "Invalid path, expected /c/<ref>" {:uri uri-str :path path})))
+            [_ agent-str cap-str] (when path (re-matches #"/c/([^/]+)/(.+)" path))]
+        (when-not (and agent-str cap-str)
+          (throw (ex-info "Invalid path, expected /c/<agent>/<cap>" {:uri uri-str :path path})))
         {:host (.getHost u)
          :port (.getPort u)
-         :ref  ref}))
+         :agent (keyword agent-str)
+         :cap (keyword cap-str)}))
     (catch java.net.URISyntaxException e
       (throw (ex-info "Malformed URI" {:uri uri-str} e)))))
-
-(defn make-ref
-  "Generates an opaque capability ref (UUID string)."
-  []
-  (str (random-uuid)))
 
 (deftype CapHandle [uri metadata]
   clojure.lang.IDeref
