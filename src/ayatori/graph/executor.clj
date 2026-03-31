@@ -60,6 +60,27 @@
             result    (<! (resolver (cap/cap-uri ch) input trace-ctx))]
         (wrap-result result)))))
 
+(defn- invoke-dep [dep-key input opts]
+  (let [resolver (:resolver opts)
+        wiring (:wiring opts)
+        caller-agent (:agent opts)
+        sys-host (:sys-host opts)
+        sys-port (:sys-port opts)
+        [target-agent target-cap] (get-in wiring [caller-agent dep-key])]
+    (when-not resolver
+      (throw (ex-info "No resolver for dep (use a system for inter-agent calls)"
+                      {:dep dep-key})))
+    (when-not target-agent
+      (throw (ex-info "Unresolved dep: no wiring found"
+                      {:agent caller-agent
+                       :dep dep-key
+                       :available-wiring (keys (get wiring caller-agent))})))
+    (let [uri (cap/make-uri sys-host sys-port target-agent target-cap)]
+      (async/go
+        (let [trace-ctx (select-keys opts [:trace-id :span-id :path])
+              result (<! (resolver uri input trace-ctx))]
+          (wrap-result result))))))
+
 (defn- invoke-agent-node [config input opts]
   (let [graph (:agent config)
         cap   (get-in graph [:compiled :caps (:cap config)])
@@ -80,6 +101,9 @@
 
     (cap/cap-handle? node)
     (invoke-cap-handle node input opts)
+
+    (keyword? node)
+    (invoke-dep node input opts)
 
     (= :agent (:type node))
     (invoke-agent-node node input opts)
@@ -135,7 +159,8 @@
   "Runs a bound graph with input. Returns a channel of the final result."
   [bound-graph state-store input opts]
   (let [{:keys [compiled nodes]} bound-graph
-        {:keys [edges max-steps]} compiled
+        {:keys [edges max-steps deps]} compiled
+        deps-set (set deps)
         entry (:entry opts)
         exec-id (str (random-uuid))
         middleware (or (:middleware opts) [])
@@ -171,10 +196,17 @@
                               {:max-steps max-steps
                                :node current-node
                                :step-count step-count})))
-            (let [node-impl (or (get nodes current-node)
-                                (throw (ex-info "No implementation bound for node"
-                                                {:node current-node
-                                                 :bound-nodes (keys nodes)})))
+            (let [node-impl (cond
+                              (get nodes current-node)
+                              (get nodes current-node)
+
+                              (contains? deps-set current-node)
+                              current-node
+
+                              :else
+                              (throw (ex-info "No implementation bound for node"
+                                              {:node current-node
+                                               :bound-nodes (keys nodes)})))
                   node-state (store/get-node-state state-store exec-id current-node)]
               (store/save-exec! state-store exec-id
                                 {:exec-id exec-id

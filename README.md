@@ -194,6 +194,18 @@ Agents expose **caps** and declare **deps**. The system wires deps to caps.
 
 Cap schemas (`:input`/`:output`) accept Malli schemas for validation. `cap/describe` introspects a CapHandle's schema. `rewire!` changes dep targets at runtime.
 
+### Capability URIs
+
+Capabilities are addressed via human-readable URIs:
+
+```
+ayatori://host:port/c/{agent-name}/{cap-name}
+```
+
+Example: `ayatori://localhost:9000/c/calculator/compute`
+
+URIs are self-describing for debugging and control plane visibility. Security is handled via [kex](https://github.com/serefayar/kex) tokens, not URI obscurity. Deps are resolved at runtime via wiring, enabling hot-swap without restart.
+
 ---
 
 ## System
