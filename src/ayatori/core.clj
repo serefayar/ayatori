@@ -4,6 +4,7 @@
    [ayatori.graph.executor :as executor]
    [ayatori.graph.store :as store]
    [clojure.core.async :as async :refer [<!]]
+   [clojure.set :as set]
    [malli.core :as m]
    [malli.error :as me]))
 
@@ -14,7 +15,8 @@
 
 (def LifecycleConfig
   [:map
-   [:on-start {:optional true} fn?]])
+   [:on-start {:optional true} fn?]
+   [:on-stop {:optional true} fn?]])
 
 (def LLMClientSpec
   [:map
@@ -84,7 +86,7 @@
 
 (defn- deps-not-in-nodes? [{:keys [nodes deps]}]
   (let [node-set (set (keys nodes))]
-    (every? #(not (contains? node-set %)) (or deps []))))
+    (not-any? node-set (or deps []))))
 
 (defn- edges-target-valid? [{:keys [nodes edges deps]}]
   (let [valid-set (into (set (keys nodes)) (or deps []))
@@ -102,9 +104,9 @@
 
 (defn- no-unreachable-nodes? [{:keys [nodes edges caps]}]
   (let [node-set   (set (keys nodes))
-        referenced (reduce into #{} [(map :entry (vals caps))
+        referenced (into #{} (concat (map :entry (vals caps))
                                      (collect-edge-targets edges)
-                                     (collect-fan-out-branches nodes)])]
+                                     (collect-fan-out-branches nodes)))]
     (every? #(contains? referenced %) node-set)))
 
 (def GraphSpec
@@ -233,6 +235,13 @@
        (assoc acc agent-key cap-handles)))
    {} agents-map))
 
+(defn- resolve-deps [wiring agent-key deps cap-map]
+  (into {}
+        (for [dep-key deps
+              :let [[target-agent target-cap] (get-in wiring [agent-key dep-key])]
+              :when target-agent]
+          [dep-key (get-in cap-map [target-agent target-cap])])))
+
 (defn- local-uri? [uri-host uri-port sys-host sys-port]
   (and (= uri-host sys-host) (= uri-port sys-port)))
 
@@ -266,23 +275,15 @@
 
 (defn- run-lifecycle-hooks! [sys]
   (let [agents-map @(:agents sys)
-        cap-map (:caps @(:state sys))]
+        cap-map (:caps @(:state sys))
+        wiring @(:wiring sys)]
     (doseq [[agent-key {:keys [graph state]}] agents-map]
       (when-let [on-start (get-in graph [:compiled :lifecycle :on-start])]
         (let [deps (get-in graph [:compiled :deps])
-              wiring @(:wiring sys)
-              resolved-deps (reduce
-                             (fn [acc dep-key]
-                               (if-let [[target-agent target-cap] (get-in wiring [agent-key dep-key])]
-                                 (assoc acc dep-key (get-in cap-map [target-agent target-cap]))
-                                 acc))
-                             {}
-                             deps)
               ctx {:agent-key agent-key
                    :caps (get cap-map agent-key)
-                   :deps resolved-deps}
-              init-state (on-start ctx)]
-          (reset! state init-state))))))
+                   :deps (resolve-deps wiring agent-key deps cap-map)}]
+          (reset! state (on-start ctx)))))))
 
 (defn start!
   "Starts the system. Builds cap-map and resolver."
@@ -300,9 +301,16 @@
     sys))
 
 (defn stop!
-  "Stops the system."
+  "Stops the system. Runs :on-stop hooks for all agents."
   {:malli/schema [:=> [:cat :map] :map]}
   [sys]
+  (when (= :running (:status @(:state sys)))
+    (doseq [[agent-key {:keys [graph state]}] @(:agents sys)]
+      (when-let [on-stop (get-in graph [:compiled :lifecycle :on-stop])]
+        (let [agent-state @state
+              cap-handles (get-in @(:state sys) [:caps agent-key])
+              ctx {:agent-key agent-key :caps cap-handles}]
+          (on-stop ctx agent-state)))))
   (reset! (:state sys) {:status :stopped})
   (reset! active-system nil)
   sys)
@@ -313,20 +321,28 @@
   [sys]
   (:caps @(:state sys)))
 
+(defn orphans
+  "Returns set of agent keys that no other agent depends on."
+  {:malli/schema [:=> [:cat :map] [:set :keyword]]}
+  [sys]
+  (let [all-agents (set (keys @(:agents sys)))
+        wiring @(:wiring sys)
+        depended-on (into #{}
+                          (for [[_ caller-wiring] wiring
+                                [_ [target-agent _]] caller-wiring]
+                            target-agent))]
+    (set/difference all-agents depended-on)))
+
 (defn- register-single-agent! [sys agent-key agent running?]
   (let [agent-entry (wrap-agent agent-key agent)
         cap-handles (when running?
-                      (reduce-kv
-                       (fn [acc cap-key cap-config]
-                         (let [uri (cap/make-uri (:host sys) (:port sys) agent-key cap-key)]
-                           (assoc acc cap-key
-                                  (cap/make-cap-handle uri
-                                                       {:agent agent-key
-                                                        :cap cap-key
-                                                        :input (:input cap-config)
-                                                        :output (:output cap-config)}))))
-                       {}
-                       (get-in agent [:compiled :caps])))]
+                      (into {}
+                            (for [[cap-key cap-config] (get-in agent [:compiled :caps])
+                                  :let [uri (cap/make-uri (:host sys) (:port sys) agent-key cap-key)]]
+                              [cap-key (cap/make-cap-handle uri {:agent agent-key
+                                                                 :cap cap-key
+                                                                 :input (:input cap-config)
+                                                                 :output (:output cap-config)})])))]
     (swap! (:agents sys) assoc agent-key agent-entry)
     (when running?
       (swap! (:state sys) assoc-in [:caps agent-key] cap-handles))
@@ -335,19 +351,11 @@
 (defn- run-agent-lifecycle! [sys agent-key agent-entry agent]
   (when-let [on-start (get-in agent [:compiled :lifecycle :on-start])]
     (let [deps (get-in agent [:compiled :deps])
-          resolved-deps (reduce
-                         (fn [acc dep-key]
-                           (if-let [[target-agent target-cap] (get-in @(:wiring sys) [agent-key dep-key])]
-                             (assoc acc dep-key (get-in (:caps @(:state sys)) [target-agent target-cap]))
-                             acc))
-                         {}
-                         deps)
-          cap-handles (get-in @(:state sys) [:caps agent-key])
+          cap-map (:caps @(:state sys))
           ctx {:agent-key agent-key
-               :caps cap-handles
-               :deps resolved-deps}
-          init-state (on-start ctx)]
-      (reset! (:state agent-entry) init-state))))
+               :caps (get cap-map agent-key)
+               :deps (resolve-deps @(:wiring sys) agent-key deps cap-map)}]
+      (reset! (:state agent-entry) (on-start ctx)))))
 
 (defn add-agents!
   "Adds agents to a running or stopped system. Runs :on-start hooks if system is running."
@@ -378,6 +386,74 @@
         (throw e)))
     sys))
 
+(defn- find-dependents
+  "Returns map of dependents in wiring format: {caller {dep-key [target-agent cap]}}."
+  [sys agent-key]
+  (reduce
+   (fn [acc [caller-key caller-wiring]]
+     (let [deps-on-agent (into {}
+                               (for [[dep-key [target-agent cap]] caller-wiring
+                                     :when (= target-agent agent-key)]
+                                 [dep-key [target-agent cap]]))]
+       (if (seq deps-on-agent)
+         (assoc acc caller-key deps-on-agent)
+         acc)))
+   {}
+   @(:wiring sys)))
+
+(defn- validate-rewire-plan
+  "Validates rewire plan covers all dependents and targets exist."
+  [sys dependents rewire-plan]
+  (doseq [[caller-key dep-map] dependents
+          [dep-key wiring] dep-map]
+    (let [new-target (get-in rewire-plan [caller-key dep-key])]
+      (when-not new-target
+        (throw (ex-info (str "Rewire plan missing: " caller-key " needs " dep-key
+                             " (currently " (pr-str {caller-key {dep-key wiring}}) ")")
+                        {:caller caller-key :dep dep-key :current-wiring wiring})))))
+  (doseq [[_ dep-map] rewire-plan
+          [dep-key [target-agent target-cap]] dep-map]
+    (let [target (get @(:agents sys) target-agent)]
+      (when-not target
+        (throw (ex-info (str "Rewire target agent not found: " target-agent
+                             " (for dep " dep-key ")")
+                        {:agent target-agent :dep dep-key})))
+      (when-not (get-in target [:graph :compiled :caps target-cap])
+        (throw (ex-info (str "Rewire target cap not found: " target-agent "/" target-cap
+                             " (for dep " dep-key ")")
+                        {:agent target-agent :cap target-cap :dep dep-key}))))))
+
+(defn remove-agent!
+  "Removes an agent from the system. If other agents depend on it, a :rewire plan must be provided.
+   Runs :on-stop hook if system is running."
+  [sys agent-key & {:keys [rewire]}]
+  (let [agent-entry (get @(:agents sys) agent-key)]
+    (when-not agent-entry
+      (throw (ex-info "Agent not found" {:agent agent-key})))
+    (let [dependents (find-dependents sys agent-key)
+          running? (= :running (:status @(:state sys)))]
+      (when (seq dependents)
+        (when-not rewire
+          (throw (ex-info (str "Cannot remove agent " agent-key
+                               ", depended on by: " (pr-str dependents))
+                          {:agent agent-key
+                           :dependents dependents})))
+        (validate-rewire-plan sys dependents rewire))
+      (when running?
+        (when-let [on-stop (get-in agent-entry [:graph :compiled :lifecycle :on-stop])]
+          (let [agent-state @(:state agent-entry)
+                cap-handles (get-in @(:state sys) [:caps agent-key])
+                ctx {:agent-key agent-key
+                     :caps cap-handles}]
+            (on-stop ctx agent-state))))
+      (doseq [[caller-key dep-map] rewire
+              [dep-key target] dep-map]
+        (swap! (:wiring sys) assoc-in [caller-key dep-key] target))
+      (swap! (:agents sys) dissoc agent-key)
+      (swap! (:state sys) update :caps dissoc agent-key)
+      (swap! (:wiring sys) dissoc agent-key)
+      sys)))
+
 (defn rewire!
   "Changes dep wiring at runtime. Next dep resolution uses new target."
   {:malli/schema [:=> [:cat :map :keyword [:map-of :keyword WiringTarget]] :nil]}
@@ -407,7 +483,8 @@
       {:graph graph :state state :cap cap-config})))
 
 (defn- wrap-output-validation [ch output-schema]
-  (if output-schema
+  (if-not output-schema
+    ch
     (async/go
       (let [result (<! ch)]
         (if (instance? Throwable result)
@@ -415,8 +492,7 @@
           (try
             (validate-schema! output-schema result :output)
             result
-            (catch Throwable e e)))))
-    ch))
+            (catch Throwable e e)))))))
 
 (defn run
   "Executes an agent cap within a started system. Returns a channel."

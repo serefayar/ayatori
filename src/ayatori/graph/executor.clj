@@ -77,20 +77,16 @@
         (wrap-result result)))))
 
 (defn- invoke-dep [dep-key input opts]
-  (let [resolver (:resolver opts)
-        wiring (:wiring opts)
-        caller-agent (:agent opts)
-        sys-host (:sys-host opts)
-        sys-port (:sys-port opts)
-        [target-agent target-cap] (get-in wiring [caller-agent dep-key])]
+  (let [{:keys [resolver wiring agent sys-host sys-port]} opts
+        [target-agent target-cap] (get-in wiring [agent dep-key])]
     (when-not resolver
       (throw (ex-info "No resolver for dep (use a system for inter-agent calls)"
                       {:dep dep-key})))
     (when-not target-agent
       (throw (ex-info "Unresolved dep: no wiring found"
-                      {:agent caller-agent
+                      {:agent agent
                        :dep dep-key
-                       :available-wiring (keys (get wiring caller-agent))})))
+                       :available-wiring (keys (get wiring agent))})))
     (let [uri (cap/make-uri sys-host sys-port target-agent target-cap)]
       (async/go
         (let [trace-ctx (select-keys opts [:trace-id :span-id :path])
@@ -193,17 +189,12 @@
                               {:max-steps max-steps
                                :node current-node
                                :step-count step-count})))
-            (let [node-impl (cond
-                              (get nodes current-node)
-                              (get nodes current-node)
-
-                              (contains? deps-set current-node)
-                              current-node
-
-                              :else
-                              (throw (ex-info "No implementation bound for node"
-                                              {:node current-node
-                                               :bound-nodes (keys nodes)})))
+            (let [node-impl (or (get nodes current-node)
+                                (when (contains? deps-set current-node)
+                                  current-node)
+                                (throw (ex-info "No implementation bound for node"
+                                                {:node current-node
+                                                 :bound-nodes (keys nodes)})))
                   agent-state (when agent-state-atom @agent-state-atom)]
               (store/save-exec! state-store exec-id
                                 {:exec-id exec-id

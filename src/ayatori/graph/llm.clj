@@ -8,8 +8,8 @@
    [malli.error :as me]))
 
 (defn- init-state [config]
-  {:messages (if (:prompt config)
-               [{:role :system :content (:prompt config)}]
+  {:messages (if-let [p (:prompt config)]
+               [{:role :system :content p}]
                [])
    :turn-count 0
    :phase :idle

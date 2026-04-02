@@ -45,9 +45,7 @@
 (defn describe
   "Returns endpoint schema from a CapHandle. nil if no schema defined."
   [^CapHandle ch]
-  (let [m (.metadata ch)]
-    (when (or (:input m) (:output m))
-      (select-keys m [:input :output]))))
+  (not-empty (select-keys (.metadata ch) [:input :output])))
 
 (defmethod print-method CapHandle [^CapHandle ch ^java.io.Writer w]
   (.write w (str "#cap<" (.uri ch) ">")))
