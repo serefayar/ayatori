@@ -8,22 +8,31 @@
 
 (declare execute)
 
-(defn- invoke-branch [nodes branch input]
+(defn- normalize-fn-result [ret input]
+  (cond
+    (nil? ret) {:result input}
+    (not (map? ret)) {:result ret}
+    :else {:result (get ret :result input)
+           :state (:state ret)}))
+
+(defn- invoke-branch [nodes branch input agent-state]
   (let [node (get nodes branch)]
     (when-not node
       (throw (ex-info "Fan-out branch node not found"
                       {:branch branch :bound-nodes (keys nodes)})))
     (if (fn? node)
-      (node input)
-      ((:handler node) input (:init-state node)))))
+      (let [ret (node input agent-state)]
+        (normalize-fn-result ret input))
+      (throw (ex-info "Branch node must be a function" {:branch branch})))))
 
-(defn- invoke-fan-out [config input nodes]
+(defn- invoke-fan-out [config input nodes agent-state _opts]
   (let [branches (:branches config)
         strategy (or (:strategy config) :collect-all)
+        collector (:collector config)
         chs (mapv (fn [branch]
                     (async/go
                       (try
-                        [branch (invoke-branch nodes branch input)]
+                        [branch (invoke-branch nodes branch input agent-state)]
                         (catch Throwable e [branch e]))))
                   branches)]
     (async/go
@@ -31,19 +40,26 @@
                   (if (empty? remaining)
                     results
                     (recur (rest remaining)
-                           (conj results (<! (first remaining))))))]
-        (if (= strategy :fail-fast)
-          (do (doseq [[_ result] all]
-                (when (instance? Throwable result)
-                  (throw result)))
-              {:result {:results (into {} all)} :state nil})
-          {:result (reduce (fn [acc [branch result]]
-                             (if (instance? Throwable result)
-                               (assoc-in acc [:errors branch] result)
-                               (assoc-in acc [:results branch] result)))
-                           {:results {} :errors {}}
-                           all)
-           :state  nil})))))
+                           (conj results (<! (first remaining))))))
+            collected (if (= strategy :fail-fast)
+                        (do (doseq [[_ result] all]
+                              (when (instance? Throwable result)
+                                (throw result)))
+                            {:results (into {} (map (fn [[k v]] [k (:result v)]) all))})
+                        (reduce (fn [acc [branch result]]
+                                  (if (instance? Throwable result)
+                                    (assoc-in acc [:errors branch] result)
+                                    (assoc-in acc [:results branch] (:result result))))
+                                {:results {} :errors {}}
+                                all))]
+        (if collector
+          (let [collector-node (get nodes collector)]
+            (when-not collector-node
+              (throw (ex-info "Fan-out collector node not found"
+                              {:collector collector :bound-nodes (keys nodes)})))
+            (let [ret (collector-node collected agent-state)]
+              (normalize-fn-result ret collected)))
+          {:result collected :state nil})))))
 
 (defn- wrap-result [result]
   (if (instance? Throwable result)
@@ -81,22 +97,13 @@
               result (<! (resolver uri input trace-ctx))]
           (wrap-result result))))))
 
-(defn- invoke-agent-node [config input opts]
-  (let [graph (:agent config)
-        cap   (get-in graph [:compiled :caps (:cap config)])
-        entry (:entry cap)
-        agent-name (keyword (str (name (:agent opts)) ">" (name (:cap config))))]
-    (async/go
-      (let [result (<! (execute graph (:state-store opts) input
-                                (assoc opts :entry entry :agent agent-name)))]
-        (wrap-result result)))))
-
-(defn- invoke-node [node input node-state nodes opts]
+(defn- invoke-node [node input agent-state nodes opts]
   (cond
     (fn? node)
     (async/go
       (try
-        {:result (node input) :state nil}
+        (let [ret (node input agent-state)]
+          (normalize-fn-result ret input))
         (catch Throwable e e)))
 
     (cap/cap-handle? node)
@@ -105,22 +112,11 @@
     (keyword? node)
     (invoke-dep node input opts)
 
-    (= :agent (:type node))
-    (invoke-agent-node node input opts)
-
     (= :llm (:type node))
-    (llm/invoke-llm-node node input node-state)
+    (llm/invoke-llm-node node input agent-state)
 
     (= :fan-out (:type node))
-    (invoke-fan-out node input nodes)
-
-    (= :stateful (:type node))
-    (async/go
-      (try
-        (let [handler (:handler node)
-              state (or node-state (:init-state node))]
-          (handler input state))
-        (catch Throwable e e)))))
+    (invoke-fan-out node input nodes agent-state opts)))
 
 (defn- resolve-route [edges current-node output]
   (let [edge (get edges current-node)]
@@ -165,6 +161,7 @@
         exec-id (str (random-uuid))
         middleware (or (:middleware opts) [])
         agent-key (:agent opts)
+        agent-state-atom (:agent-state opts)
         trace-id (or (:trace-id opts) (str (random-uuid)))
         span-id (str (random-uuid))
         parent-span (:span-id opts)
@@ -207,7 +204,7 @@
                               (throw (ex-info "No implementation bound for node"
                                               {:node current-node
                                                :bound-nodes (keys nodes)})))
-                  node-state (store/get-node-state state-store exec-id current-node)]
+                  agent-state (when agent-state-atom @agent-state-atom)]
               (store/save-exec! state-store exec-id
                                 {:exec-id exec-id
                                  :current-node current-node
@@ -221,7 +218,7 @@
                                    :input current-input
                                    :step step-count
                                    :timestamp node-start))
-                    node-result (<! (invoke-node node-impl current-input node-state nodes opts))
+                    node-result (<! (invoke-node node-impl current-input agent-state nodes opts))
                     _ (when (instance? Throwable node-result) (throw node-result))
                     {:keys [result state streaming]} node-result]
                 (if streaming
@@ -243,8 +240,8 @@
                                  :duration-ms (- (now-ms) node-start)
                                  :step step-count
                                  :timestamp (now-ms)))
-                    (when state
-                      (store/save-node-state! state-store exec-id current-node state))
+                    (when (and state agent-state-atom)
+                      (reset! agent-state-atom state))
                     (if-let [route (resolve-route edges current-node result)]
                       (recur (:next-node route) (:input route) (inc step-count))
                       (let [final (extract-result result)]
