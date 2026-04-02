@@ -27,7 +27,7 @@ deps -> agent(nodes, edges) -> caps
 2. **System** groups named agents with shared middleware, wiring, and state store (`make-system`, `start!`/`stop!`)
 3. **Run** executes a cap through a system, returns a core.async channel (`run`)
 
-Nodes are functions: `(fn [input] -> output)` for pure nodes, or maps for special types (`:llm`, `:fan-out`, `:agent`, stateful). Routing is data: edges are keywords (unconditional) or maps (conditional, based on `:route` key). Agents expose **caps** (capabilities) and declare **deps** (dependencies). The system wires deps to caps at start time.
+Nodes are functions with signature `(fn [input state] -> {:result ... :state ...})`. Special node types: `:llm`, `:fan-out`. Routing is data: edges are keywords (unconditional) or maps (conditional, based on `:route` key). Agents expose **caps** (capabilities) and declare **deps** (dependencies). The system wires deps to caps at start time.
 
 ---
 
@@ -96,7 +96,7 @@ Nodes are functions: `(fn [input] -> output)` for pure nodes, or maps for specia
                                               [:answer :string]
                                               [:order-count :int]]
                                      :max-retries 2}}
-             :search (:handler search-tool)}
+             :search (fn [input _] {:result ((:handler search-tool) input)})}
      :edges {:llm {:done :ayatori/done
                    :search :search}
              :search :llm}
@@ -121,15 +121,15 @@ Tool calls route through graph nodes, so middleware observes every step. `:respo
 ```clojure
 (def analyzer
   (aya/make-agent
-    {:nodes {:preprocess (fn [input]
-                           {:text (clojure.string/lower-case (:raw input))})
+    {:nodes {:preprocess (fn [input _]
+                           {:result {:text (clojure.string/lower-case (:raw input))}})
              :analyze {:type :fan-out
                        :branches [:sentiment :toxicity]}
-             :sentiment (fn [_] {:score 0.85 :label :positive})
-             :toxicity (fn [_] {:score 0.02 :label :safe})
-             :aggregate (fn [input]
-                          {:sentiment (get-in input [:results :sentiment :label])
-                          :toxicity  (get-in input [:results :toxicity :label])})}
+             :sentiment (fn [_ _] {:result {:score 0.85 :label :positive}})
+             :toxicity (fn [_ _] {:result {:score 0.02 :label :safe}})
+             :aggregate (fn [input _]
+                          {:result {:sentiment (get-in input [:results :sentiment :label])
+                                    :toxicity  (get-in input [:results :toxicity :label])}})}
      :edges {:preprocess :analyze
              :analyze :aggregate}
      :caps {:analyze {:entry :preprocess}}}))
@@ -137,31 +137,6 @@ Tool calls route through graph nodes, so middleware observes every step. `:respo
 (async/<!! (aya/run (-> (aya/make-system {:agents {:a analyzer}}) aya/start!) :a :analyze {:raw "Great product!"}))
 ;; => {:sentiment :positive, :toxicity :safe}
 ```
-
-### Agent composition
-
-An agent can use another agent as a node. No system wiring needed.
-
-```clojure
-(def doubler
-  (aya/make-agent
-    {:nodes {:dbl (fn [input] {:n (* 2 (:n input))})}
-     :edges {}
-     :caps {:main {:entry :dbl}}}))
-
-(def pipeline
-  (aya/make-agent
-    {:nodes {:prep (fn [input] {:n (:value input)})
-             :compute {:type :agent :agent doubler :cap :main}
-             :format (fn [input] {:result (:n input)})}
-     :edges {:prep :compute :compute :format}
-     :caps {:main {:entry :prep}}}))
-
-(async/<!! (aya/run (-> (aya/make-system {:agents {:p pipeline}}) aya/start!) :p :main {:value 5}))
-;; => {:result 10}
-```
-
-The inner agent runs with its own execution scope (isolated state, separate span) but shares the same store and trace-id.
 
 ---
 
@@ -172,13 +147,13 @@ Agents expose **caps** and declare **deps**. The system wires deps to caps.
 ```clojure
 (def doubler
   (aya/make-agent
-    {:nodes {:dbl (fn [input] {:doubled (* 2 (:n input))})}
+    {:nodes {:dbl (fn [input _] {:result {:doubled (* 2 (:n input))}})}
      :edges {}
      :caps {:main {:entry :dbl}}}))
 
 (def caller
   (aya/make-agent
-    {:nodes {:prep (fn [input] {:n (:v input)})}
+    {:nodes {:prep (fn [input _] {:result {:n (:v input)}})}
      :edges {:prep :compute}
      :deps [:compute]
      :caps {:main {:entry :prep}}}))
@@ -220,6 +195,21 @@ URIs are self-describing for debugging and control plane visibility. Security is
 
 `:store` is optional. Default: in-memory (`:atom`). File-based persistence: `{:type :edn :path "..."}`.
 
+### Runtime Management
+
+Add agents to running systems with `add-agents!`:
+
+```clojure
+(aya/add-agents! sys {:agents {:caller caller :doubler doubler}
+                      :wiring {:caller {:compute [:doubler :main]}}})
+```
+
+Change wiring at runtime with `rewire!`:
+
+```clojure
+(aya/rewire! sys :caller {:compute [:tripler :main]})
+```
+
 ## Middleware
 
 `IGraphMiddleware` protocol hooks: `on-graph-start`, `on-node-start`, `on-node-end`, `on-graph-end`, `on-graph-error`.
@@ -232,13 +222,43 @@ Built-in: `(mw/make-tap)` emits all events via `tap>`.
 
 ## Node Types
 
-| Type | Bind value | Description |
+| Type | Definition | Description |
 |------|-----------|-------------|
-| Stateless | `(fn [input] -> output)` | Pure function. Most nodes. |
-| Stateful | `{:type :stateful :handler (fn [input state] -> {:result {} :state {}}) :init-state {}}` | State persists within a single execution. |
-| LLM | `{:type :llm :client ... :prompt ... :tools [...]}` | Conversation state, tool routing, structured output. `:stream true` for token streaming. |
-| Fan-out | `{:type :fan-out :branches [...] :strategy :collect-all}` | Parallel execution. `:collect-all` (default) or `:fail-fast`. |
-| Agent | `{:type :agent :agent <compiled-agent> :cap :main}` | Delegates to another agent's cap. |
+| Function | `(fn [input state] -> {:result ... :state ...})` | Transform data and/or update agent state |
+| LLM | `{:type :llm :client ... :prompt ... :tools [...]}` | Conversation, tool routing, structured output. `:stream true` for streaming. |
+| Fan-out | `{:type :fan-out :branches [...] :strategy :collect-all}` | Parallel execution. `:collector` for coordinated state updates. |
+
+### Function Node
+
+All function nodes have the same signature:
+
+```clojure
+(fn [input state] -> {:result ... :state ...})
+```
+
+- `input`: data flowing through the graph
+- `state`: agent's persistent memory
+
+### Return Values
+
+- `{:result r}` transform output
+- `{:state s}` update agent memory
+- `{:result r :state s}` both
+- `nil` or `{}` pass input unchanged
+
+### Lifecycle Hooks
+
+Initialize agent state with `:on-start`. The `ctx` parameter contains `{:agent-key :caps :deps}`:
+
+```clojure
+(aya/make-agent
+  {:nodes {:counter (fn [input state]
+                      {:result {:count (:n state)}
+                       :state (update state :n inc)})}
+   :edges {}
+   :caps {:main {:entry :counter}}
+   :lifecycle {:on-start (fn [ctx] {:n 0})}})
+```
 
 ## Edge DSL
 
@@ -252,10 +272,10 @@ Built-in: `(mw/make-tap)` emits all events via `tap>`.
                 :done :ayatori/done}}
 
 ;; Node decides the route
-(defn score [input]
-  (if (> (:confidence input) 0.8)
-    {:route :approve :data input}
-    {:route :reject :data input}))
+(defn score [input _]
+  {:result (if (> (:confidence input) 0.8)
+             {:route :approve :data input}
+             {:route :reject :data input})})
 ```
 
 `:ayatori/done` ends execution and returns `:data` as the final result.
@@ -264,7 +284,7 @@ Built-in: `(mw/make-tap)` emits all events via `tap>`.
 
 ## TODOs
 
-- [ ] Agent management: `add-agent!`, `remove-agent!` (stopped and running systems)
+- [ ] Agent management: `remove-agent!`
 - [ ] Distributed execution: multi-node transport, capability-aware routing
 - [ ] [kex](https://github.com/serefayar/kex) integration: cryptographic capability tokens with attenuation
 - [ ] LLM providers: OpenAI, Anthropic, etc. (currently only Ollama)
