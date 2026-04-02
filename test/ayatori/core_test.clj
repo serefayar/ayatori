@@ -33,8 +33,7 @@
 
 (deftest linear-pipeline-test
   (testing "three nodes in sequence produce final result"
-    (let [g (aya/make-agent {
-                             :nodes {:parse  (fn [input _] {:result {:text (str "parsed:" (:raw input))}})
+    (let [g (aya/make-agent {:nodes {:parse  (fn [input _] {:result {:text (str "parsed:" (:raw input))}})
                                      :enrich (fn [input _] {:result {:text (str "enriched:" (:text input))}})
                                      :score  (fn [input _] {:result {:score 0.95 :text (:text input)}})}
                              :edges {:parse  :enrich
@@ -45,8 +44,7 @@
 
 (deftest conditional-branch-test
   (testing "node output :route determines next node"
-    (let [g (aya/make-agent {
-                             :nodes {:score   (fn [input _]
+    (let [g (aya/make-agent {:nodes {:score   (fn [input _]
                                                 {:result (if (> (:confidence input) 0.8)
                                                            {:route :approve :data {:decision :approved}}
                                                            {:route :reject :data {:decision :rejected}})})
@@ -64,16 +62,14 @@
 
 (deftest conditional-edge-error-test
   (testing "unknown route key throws"
-    (let [g (aya/make-agent {
-                             :nodes {:router (fn [_ _] {:result {:route :unknown :data {}}})
+    (let [g (aya/make-agent {:nodes {:router (fn [_ _] {:result {:route :unknown :data {}}})
                                      :a      (fn [input _] {:result input})}
                              :edges {:router {:known :a}}
                              :caps  {:main {:entry :router}}})]
       (is (thrown-with-msg? Exception #"Unknown route"
                             (run-agent! g {})))))
   (testing "conditional edge without :route in output throws"
-    (let [g (aya/make-agent {
-                             :nodes {:router (fn [_ _] {:result {:just "data"}})
+    (let [g (aya/make-agent {:nodes {:router (fn [_ _] {:result {:just "data"}})
                                      :a      (fn [input _] {:result input})}
                              :edges {:router {:x :a}}
                              :caps  {:main {:entry :router}}})]
@@ -83,8 +79,7 @@
 (deftest cycle-test
   (testing "graph supports cycles with max-steps guard"
     (let [attempt (atom 0)
-          g (aya/make-agent {
-                             :nodes     {:generate (fn [_ _]
+          g (aya/make-agent {:nodes     {:generate (fn [_ _]
                                                      (swap! attempt inc)
                                                      {:result {:value (* @attempt 10) :attempt @attempt}})
                                          :validate (fn [input _]
@@ -101,8 +96,7 @@
 
 (deftest max-steps-exceeded-test
   (testing "exceeding max-steps throws"
-    (let [g (aya/make-agent {
-                             :nodes     {:a (fn [input _] {:result {:v (inc (or (:v input) 0))}})
+    (let [g (aya/make-agent {:nodes     {:a (fn [input _] {:result {:v (inc (or (:v input) 0))}})
                                          :b (fn [input _] {:result input})}
                              :edges     {:a :b :b :a}
                              :caps      {:main {:entry :a}}
@@ -112,8 +106,7 @@
 
 (deftest error-propagation-test
   (testing "node exception propagates to caller"
-    (let [g (aya/make-agent {
-                             :nodes {:a (fn [_ _] (throw (ex-info "boom" {:cause :test})))
+    (let [g (aya/make-agent {:nodes {:a (fn [_ _] (throw (ex-info "boom" {:cause :test})))
                                      :b (fn [input _] {:result input})}
                              :edges {:a :b}
                              :caps  {:main {:entry :a}}})]
@@ -123,16 +116,14 @@
 (deftest unreachable-node-test
   (testing "node not referenced by any cap entry, edge, or fan-out branch is rejected"
     (is (thrown-with-msg? Exception #"Invalid graph spec"
-                          (aya/make-agent {
-                                           :nodes {:a      (fn [input _] {:result input})
+                          (aya/make-agent {:nodes {:a      (fn [input _] {:result input})
                                                    :orphan (fn [_ _] {:result :never-called})}
                                            :edges {}
                                            :caps  {:main {:entry :a}}})))))
 
 (deftest stateful-node-test
   (testing "stateful node accumulates state across nodes in same execution"
-    (let [g (aya/make-agent {
-                             :nodes     {:counter (fn [_ state]
+    (let [g (aya/make-agent {:nodes     {:counter (fn [_ state]
                                                     (let [n (inc (:count state 0))]
                                                       {:result {:count n}
                                                        :state  {:count n}}))
@@ -150,8 +141,7 @@
 
 (deftest concurrent-stateful-shared-state-test
   (testing "two concurrent runs on same agent share state"
-    (let [g   (aya/make-agent {
-                               :nodes     {:counter (fn [input state]
+    (let [g   (aya/make-agent {:nodes     {:counter (fn [input state]
                                                       (let [n (inc (:count state 0))]
                                                         (Thread/sleep (long (or (:delay input) 0)))
                                                         {:result {:count n}
@@ -183,8 +173,7 @@
 (deftest llm-text-response-test
   (testing "LLM node with simple text response routes to :done"
     (let [invoke-fn (mock-invoke [{:role :assistant :content "Hello!"}])
-          g (aya/make-agent {
-                             :nodes {:llm    {:type      :llm
+          g (aya/make-agent {:nodes {:llm    {:type      :llm
                                               :client    {}
                                               :invoke-fn invoke-fn
                                               :prompt    "You are helpful"}
@@ -202,8 +191,7 @@
                                      :function {:name      "search"
                                                 :arguments {:query "clojure"}}}]}
                       {:role :assistant :content "Found results for clojure"}])
-          g (aya/make-agent {
-                             :nodes {:llm    {:type      :llm
+          g (aya/make-agent {:nodes {:llm    {:type      :llm
                                               :client    {}
                                               :invoke-fn invoke-fn}
                                      :search (fn [input _]
@@ -227,8 +215,7 @@
                                      :function {:name      "calc"
                                                 :arguments {:expr "1+1"}}}]}
                       {:role :assistant :content "Done with both"}])
-          g (aya/make-agent {
-                             :nodes {:llm    {:type      :llm
+          g (aya/make-agent {:nodes {:llm    {:type      :llm
                                               :client    {}
                                               :invoke-fn invoke-fn}
                                      :search (fn [input _] {:result (str "found:" (:q input))})
@@ -246,8 +233,7 @@
 (deftest llm-structured-output-test
   (testing "LLM node with response-format returns parsed structured data"
     (let [invoke-fn (mock-invoke [{:name "Alice" :total 99.5}])
-          g (aya/make-agent {
-                             :nodes {:llm    {:type            :llm
+          g (aya/make-agent {:nodes {:llm    {:type            :llm
                                               :client          {}
                                               :invoke-fn       invoke-fn
                                               :response-format {:type   :json-schema
@@ -265,8 +251,7 @@
     (let [invoke-fn (mock-invoke [{:wrong "format"}
                                   {:name "Alice" :total 99.5}])
           g (aya/make-agent
-             {
-              :nodes {:llm {:type            :llm
+             {:nodes {:llm {:type            :llm
                             :client          {}
                             :invoke-fn       invoke-fn
                             :response-format {:type        :json-schema
@@ -280,8 +265,7 @@
 (deftest llm-max-turns-test
   (testing "LLM node throws when max turns exceeded"
     (let [invoke-fn (mock-invoke (repeat 100 {:role :assistant :content "loop"}))
-          g (aya/make-agent {
-                             :nodes {:llm     {:type      :llm
+          g (aya/make-agent {:nodes {:llm     {:type      :llm
                                                :client    {}
                                                :invoke-fn invoke-fn
                                                :max-turns 2}
@@ -295,8 +279,7 @@
 
 (deftest fan-out-test
   (testing "fan-out dispatches to branches in parallel and collects results"
-    (let [g (aya/make-agent {
-                             :nodes {:fan       {:type     :fan-out
+    (let [g (aya/make-agent {:nodes {:fan       {:type     :fan-out
                                                  :branches [:sentiment :toxicity]}
                                      :sentiment (fn [_ _] {:result {:score 0.8 :label :positive}})
                                      :toxicity  (fn [_ _] {:result {:score 0.1 :label :safe}})
@@ -310,8 +293,7 @@
 
 (deftest fan-out-branch-error-test
   (testing "fan-out with collect-all captures errors per branch"
-    (let [g (aya/make-agent {
-                             :nodes {:fan   {:type     :fan-out
+    (let [g (aya/make-agent {:nodes {:fan   {:type     :fan-out
                                              :branches [:ok :fail]
                                              :strategy :collect-all}
                                      :ok    (fn [_ _] {:result {:v 1}})
@@ -328,12 +310,10 @@
 
 (deftest dep-wiring-test
   (testing "dep is resolved via wiring at start time"
-    (let [doubler (aya/make-agent {
-                                   :nodes {:dbl (fn [input _] {:result {:doubled (* 2 (:n input))}})}
+    (let [doubler (aya/make-agent {:nodes {:dbl (fn [input _] {:result {:doubled (* 2 (:n input))}})}
                                    :edges {}
                                    :caps  {:main {:entry :dbl}}})
-          caller  (aya/make-agent {
-                                   :nodes {:prep (fn [input _] {:result {:n (inc (:v input))}})}
+          caller  (aya/make-agent {:nodes {:prep (fn [input _] {:result {:n (inc (:v input))}})}
                                    :edges {:prep :double}
                                    :deps  [:double]
                                    :caps  {:main {:entry :prep}}})
@@ -346,8 +326,7 @@
 
 (deftest unresolved-dep-test
   (testing "missing wiring for dep throws at runtime"
-    (let [agent (aya/make-agent {
-                                 :nodes {:a (fn [_ _] {:result :ok})}
+    (let [agent (aya/make-agent {:nodes {:a (fn [_ _] {:result :ok})}
                                  :edges {:a :missing}
                                  :deps  [:missing]
                                  :caps  {:main {:entry :a}}})
@@ -359,16 +338,13 @@
 
 (deftest rewire-test
   (testing "rewire! changes dep target at runtime"
-    (let [doubler  (aya/make-agent {
-                                    :nodes {:dbl (fn [input _] {:result {:result (* 2 (:n input))}})}
+    (let [doubler  (aya/make-agent {:nodes {:dbl (fn [input _] {:result {:result (* 2 (:n input))}})}
                                     :edges {}
                                     :caps  {:main {:entry :dbl}}})
-          tripler  (aya/make-agent {
-                                    :nodes {:tri (fn [input _] {:result {:result (* 3 (:n input))}})}
+          tripler  (aya/make-agent {:nodes {:tri (fn [input _] {:result {:result (* 3 (:n input))}})}
                                     :edges {}
                                     :caps  {:main {:entry :tri}}})
-          caller (aya/make-agent {
-                                  :nodes {:prep (fn [input _] {:result {:n (:v input)}})}
+          caller (aya/make-agent {:nodes {:prep (fn [input _] {:result {:n (:v input)}})}
                                   :edges {:prep :compute}
                                   :deps  [:compute]
                                   :caps  {:main {:entry :prep}}})
@@ -386,8 +362,7 @@
 
 (deftest system-lifecycle-test
   (testing "system starts and stops"
-    (let [g   (aya/make-agent {
-                               :nodes {:echo (fn [input _] {:result {:echoed input}})}
+    (let [g   (aya/make-agent {:nodes {:echo (fn [input _] {:result {:echoed input}})}
                                :edges {}
                                :caps  {:main {:entry :echo}}})
           sys (-> (aya/make-system {:agents {:echo g}})
@@ -402,8 +377,7 @@
 
 (deftest multi-cap-test
   (testing "same agent accessible via different caps"
-    (let [g   (aya/make-agent {
-                               :nodes {:greet (fn [input _] {:result {:greeting (str "Hello, " (:name input))}})
+    (let [g   (aya/make-agent {:nodes {:greet (fn [input _] {:result {:greeting (str "Hello, " (:name input))}})
                                        :shout (fn [input _] {:result {:greeting (str "HEY " (str/upper-case (:name input)) "!")}})}
                                :edges {}
                                :caps  {:greet {:entry :greet}
@@ -419,8 +393,7 @@
 
 (deftest cap-schema-validation-test
   (testing "input validation rejects invalid data"
-    (let [g (aya/make-agent {
-                             :nodes {:echo (fn [input _] {:result input})}
+    (let [g (aya/make-agent {:nodes {:echo (fn [input _] {:result input})}
                              :edges {}
                              :caps  {:main {:entry :echo
                                             :input [:map [:name :string]]}}})]
@@ -428,8 +401,7 @@
                             (run-agent! g {:wrong "key"})))
       (is (= {:name "Alice"} (run-agent! g {:name "Alice"})))))
   (testing "output validation rejects invalid data"
-    (let [g (aya/make-agent {
-                             :nodes {:bad (fn [_ _] {:result {:wrong "shape"}})}
+    (let [g (aya/make-agent {:nodes {:bad (fn [_ _] {:result {:wrong "shape"}})}
                              :edges {}
                              :caps  {:main {:entry  :bad
                                             :output [:map [:name :string]]}}})]
@@ -448,12 +420,10 @@
                (on-graph-error [_ _])
                (on-node-start  [_ _])
                (on-node-end    [_ _]))
-          doubler (aya/make-agent {
-                                   :nodes {:dbl (fn [input _] {:result {:doubled (* 2 (:n input))}})}
+          doubler (aya/make-agent {:nodes {:dbl (fn [input _] {:result {:doubled (* 2 (:n input))}})}
                                    :edges {}
                                    :caps  {:main {:entry :dbl}}})
-          caller  (aya/make-agent {
-                                   :nodes {:prep (fn [input _] {:result {:n (inc (:v input))}})}
+          caller  (aya/make-agent {:nodes {:prep (fn [input _] {:result {:n (inc (:v input))}})}
                                    :edges {:prep :compute}
                                    :deps  [:compute]
                                    :caps  {:main {:entry :prep}}})

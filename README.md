@@ -210,6 +210,23 @@ Change wiring at runtime with `rewire!`:
 (aya/rewire! sys :caller {:compute [:tripler :main]})
 ```
 
+Remove agents with `remove-agent!`. If other agents depend on it, provide a rewire plan:
+
+```clojure
+;; No dependents
+(aya/remove-agent! sys :lonely-agent)
+
+;; With dependents: must provide rewire plan
+(aya/remove-agent! sys :doubler :rewire {:caller {:compute [:tripler :main]}})
+```
+
+Find orphan agents (not depended on by anyone):
+
+```clojure
+(aya/orphans sys)
+;; => #{:old-doubler}
+```
+
 ## Middleware
 
 `IGraphMiddleware` protocol hooks: `on-graph-start`, `on-node-start`, `on-node-end`, `on-graph-end`, `on-graph-error`.
@@ -248,17 +265,17 @@ All function nodes have the same signature:
 
 ### Lifecycle Hooks
 
-Initialize agent state with `:on-start`. The `ctx` parameter contains `{:agent-key :caps :deps}`:
-
 ```clojure
 (aya/make-agent
-  {:nodes {:counter (fn [input state]
-                      {:result {:count (:n state)}
-                       :state (update state :n inc)})}
+  {:nodes {:worker (fn [input state] {:result input})}
    :edges {}
-   :caps {:main {:entry :counter}}
-   :lifecycle {:on-start (fn [ctx] {:n 0})}})
+   :caps {:main {:entry :worker}}
+   :lifecycle {:on-start (fn [ctx] {:n 0})
+               :on-stop (fn [ctx state] (println "cleanup"))}})
 ```
+
+- `:on-start` `(fn [ctx] -> state)`: Runs on `start!` or `add-agents!`. Returns initial state.
+- `:on-stop` `(fn [ctx state] -> any)`: Runs on `stop!` or `remove-agent!`. Return value ignored.
 
 ## Edge DSL
 
@@ -284,9 +301,9 @@ Initialize agent state with `:on-start`. The `ctx` parameter contains `{:agent-k
 
 ## TODOs
 
-- [ ] Agent management: `remove-agent!`
 - [ ] Distributed execution: multi-node transport, capability-aware routing
 - [ ] [kex](https://github.com/serefayar/kex) integration: cryptographic capability tokens with attenuation
+- [ ] Capability revocation: revoke caps on agent removal for remote dependents
 - [ ] LLM providers: OpenAI, Anthropic, etc. (currently only Ollama)
 - [ ] MCP integration: server (expose agents) and client (consume tools)
 - [ ] Observability: topology visualization, async middleware dispatch

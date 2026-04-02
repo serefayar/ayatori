@@ -12,7 +12,7 @@
   (get-exec [_ eid] (get-in @data [:execs eid]))
   (save-exec! [_ eid s] (swap! data assoc-in [:execs eid] s) nil)
   (delete-exec! [_ eid]
-    (swap! data (fn [d] (-> d (update :execs dissoc eid) (update :nodes dissoc eid))))
+    (swap! data #(-> % (update :execs dissoc eid) (update :nodes dissoc eid)))
     nil)
   (get-node-state [_ eid nid] (get-in @data [:nodes eid nid]))
   (save-node-state! [_ eid nid s] (swap! data assoc-in [:nodes eid nid] s) nil))
