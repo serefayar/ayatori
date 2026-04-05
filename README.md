@@ -15,8 +15,6 @@ See the [introductory article](https://serefayar.substack.com/p/ayatori-agent-or
 > [!WARNING]
 > **Status:** Proof of concept, under active development. Not production-ready.
 
----
-
 ## How it works
 
 ```
@@ -27,288 +25,65 @@ deps -> agent(nodes, edges) -> caps
 2. **System** groups named agents with shared middleware, wiring, and state store (`make-system`, `start!`/`stop!`)
 3. **Run** executes a cap through a system, returns a core.async channel (`run`)
 
-Nodes are functions with signature `(fn [input state] -> {:result ... :state ...})`. Special node types: `:llm`, `:fan-out`. Routing is data: edges are keywords (unconditional) or maps (conditional, based on `:route` key). Agents expose **caps** (capabilities) and declare **deps** (dependencies). The system wires deps to caps at start time.
-
----
-
 ## Quick Start
-
-### Streaming LLM response
 
 ```clojure
 (require '[ayatori.core :as aya]
          '[clojure.core.async :as async])
 
+(def lookup-tool
+  {:name "lookup"
+   :description "Look up order by ID"
+   :schema [:map [:id :int]]})
+
 (def assistant
   (aya/make-agent
-    {:nodes {:llm {:type :llm
-                   :stream true
+    {:nodes {:validate (fn [input _]
+                         {:result {:query (:content input)}})
+             :llm {:type :llm
                    :client {:provider :ollama
                             :model "gpt-oss:20b"
                             :base-url "http://localhost:11434"}
-                   :prompt "You are a helpful assistant."}}
-     :edges {:llm {:done :ayatori/done}}
-     :caps {:chat {:entry :llm}}}))
+                   :prompt "You are an order assistant."
+                   :tools [lookup-tool]
+                   :response-format {:type :json-schema
+                                     :schema [:map [:answer :string] [:found :boolean]]}
+                   :memory {:strategies [{:type :sliding-window
+                                          :max-messages 20
+                                          :preserve-system true}]}}
+             :lookup (fn [{:keys [id]} _]
+                       {:result (str "Order " id ": shipped")})}
+     :edges {:validate :llm
+             :llm {:done :ayatori/done
+                   :lookup :lookup}
+             :lookup :llm}
+     :caps {:chat {:entry :validate
+                   :output [:map [:answer :string] [:found :boolean]]}}}))
 
 (def sys (-> (aya/make-system {:agents {:assistant assistant}})
              aya/start!))
 
-(let [ch (async/<!! (aya/run sys :assistant :chat {:content "Explain Clojure in 2 sentences."}))]
-  (loop []
-    (when-let [token (async/<!! ch)]
-      (print token)
-      (flush)
-      (recur)))
-  (println))
-;; Clojure is a modern, functional Lisp dialect that runs on the JVM ...
+(async/<!! (aya/run sys :assistant :chat {:content "What is the status of order 123?"}))
+;; => {:answer "Your order #123 has been shipped." :found true}
 
 (aya/stop! sys)
 ```
 
-`:stream true` returns a channel of tokens instead of waiting for the full response.
+## Documentation
 
-### LLM agent with tool calling and structured output
-
-```clojure
-(require '[ayatori.core :as aya]
-         '[clojure.core.async :as async]
-         '[ayatori.middleware :as mw])
-
-(def search-tool
-  {:name "search"
-   :description "Search the order database"
-   :schema [:map [:query :string]]
-   :handler (fn [{:keys [query]}]
-              [{:id 10258 :date "2026-03-20" :customer "Jane Doe" :total 219.47}
-               {:id 10257 :date "2026-03-19" :customer "John Doe" :total 134.00}
-               {:id 10256 :date "2026-03-18" :customer "John Jr." :total 87.39}])})
-
-(def assistant
-  (aya/make-agent
-    {:nodes {:llm {:type :llm
-                   :client {:provider :ollama
-                            :model    "gpt-oss:20b"
-                            :base-url "http://localhost:11434"}
-                   :prompt "You are a helpful assistant."
-                   :tools [search-tool]
-                   :response-format {:type :json-schema
-                                     :schema [:map
-                                              [:answer :string]
-                                              [:order-count :int]]
-                                     :max-retries 2}}
-             :search (fn [input _] {:result ((:handler search-tool) input)})}
-     :edges {:llm {:done :ayatori/done
-                   :search :search}
-             :search :llm}
-     :caps {:chat {:entry :llm
-                   :input [:map [:content :string]]
-                   :output [:map [:answer :string] [:order-count :int]]}}}))
-
-(def sys (-> (aya/make-system {:agents {:assistant assistant}
-                               :middleware [(mw/make-tap)]})
-             aya/start!))
-
-(async/<!! (aya/run sys :assistant :chat {:content "Find recent orders"}))
-;; => {:answer "Here are the most recent orders: ..." :order-count 3}
-
-(aya/stop! sys)
-```
-
-Tool calls route through graph nodes, so middleware observes every step. `:response-format` enforces output schema (Malli -> JSON Schema) with optional self-healing retries via `:max-retries`.
-
-### Fan-out with parallel analysis
-
-```clojure
-(def analyzer
-  (aya/make-agent
-    {:nodes {:preprocess (fn [input _]
-                           {:result {:text (clojure.string/lower-case (:raw input))}})
-             :analyze {:type :fan-out
-                       :branches [:sentiment :toxicity]}
-             :sentiment (fn [_ _] {:result {:score 0.85 :label :positive}})
-             :toxicity (fn [_ _] {:result {:score 0.02 :label :safe}})
-             :aggregate (fn [input _]
-                          {:result {:sentiment (get-in input [:results :sentiment :label])
-                                    :toxicity  (get-in input [:results :toxicity :label])}})}
-     :edges {:preprocess :analyze
-             :analyze :aggregate}
-     :caps {:analyze {:entry :preprocess}}}))
-
-(async/<!! (aya/run (-> (aya/make-system {:agents {:a analyzer}}) aya/start!) :a :analyze {:raw "Great product!"}))
-;; => {:sentiment :positive, :toxicity :safe}
-```
-
----
-
-## Caps and Deps
-
-Agents expose **caps** and declare **deps**. The system wires deps to caps.
-
-```clojure
-(def doubler
-  (aya/make-agent
-    {:nodes {:dbl (fn [input _] {:result {:doubled (* 2 (:n input))}})}
-     :edges {}
-     :caps {:main {:entry :dbl}}}))
-
-(def caller
-  (aya/make-agent
-    {:nodes {:prep (fn [input _] {:result {:n (:v input)}})}
-     :edges {:prep :compute}
-     :deps [:compute]
-     :caps {:main {:entry :prep}}}))
-
-(def sys (-> (aya/make-system
-               {:agents {:caller caller :doubler doubler}
-                :wiring {:caller {:compute [:doubler :main]}}})
-             aya/start!))
-
-(async/<!! (aya/run sys :caller :main {:v 5}))
-;; => {:doubled 10}
-```
-
-Cap schemas (`:input`/`:output`) accept Malli schemas for validation. `cap/describe` introspects a CapHandle's schema. `rewire!` changes dep targets at runtime.
-
-### Capability URIs
-
-Capabilities are addressed via human-readable URIs:
-
-```
-ayatori://host:port/c/{agent-name}/{cap-name}
-```
-
-Example: `ayatori://localhost:9000/c/calculator/compute`
-
-URIs are self-describing for debugging and control plane visibility. Security is handled via [kex](https://github.com/serefayar/kex) tokens, not URI obscurity. Deps are resolved at runtime via wiring, enabling hot-swap without restart.
-
----
-
-## System
-
-```clojure
-(def sys (-> (aya/make-system {:agents {:assistant assistant :reviewer reviewer}
-                               :middleware [(mw/make-tap)]
-                               :wiring {:reviewer {:llm [:assistant :chat]}}
-                               :store {:type :edn :path "/tmp/state.edn"}})
-             aya/start!))
-```
-
-`:store` is optional. Default: in-memory (`:atom`). File-based persistence: `{:type :edn :path "..."}`.
-
-### Runtime Management
-
-Add agents to running systems with `add-agents!`:
-
-```clojure
-(aya/add-agents! sys {:agents {:caller caller :doubler doubler}
-                      :wiring {:caller {:compute [:doubler :main]}}})
-```
-
-Change wiring at runtime with `rewire!`:
-
-```clojure
-(aya/rewire! sys :caller {:compute [:tripler :main]})
-```
-
-Remove agents with `remove-agent!`. If other agents depend on it, provide a rewire plan:
-
-```clojure
-;; No dependents
-(aya/remove-agent! sys :lonely-agent)
-
-;; With dependents: must provide rewire plan
-(aya/remove-agent! sys :doubler :rewire {:caller {:compute [:tripler :main]}})
-```
-
-Find orphan agents (not depended on by anyone):
-
-```clojure
-(aya/orphans sys)
-;; => #{:old-doubler}
-```
-
-## Middleware
-
-`IGraphMiddleware` protocol hooks: `on-graph-start`, `on-node-start`, `on-node-end`, `on-graph-end`, `on-graph-error`.
-
-Context map includes `:exec-id`, `:agent`, `:trace-id`, `:span-id`, `:parent-span-id`, `:path`, and event-specific keys. Trace context propagates across agent boundaries.
-
-Built-in: `(mw/make-tap)` emits all events via `tap>`.
-
----
-
-## Node Types
-
-| Type | Definition | Description |
-|------|-----------|-------------|
-| Function | `(fn [input state] -> {:result ... :state ...})` | Transform data and/or update agent state |
-| LLM | `{:type :llm :client ... :prompt ... :tools [...]}` | Conversation, tool routing, structured output. `:stream true` for streaming. |
-| Fan-out | `{:type :fan-out :branches [...] :strategy :collect-all}` | Parallel execution. `:collector` for coordinated state updates. |
-
-### Function Node
-
-All function nodes have the same signature:
-
-```clojure
-(fn [input state] -> {:result ... :state ...})
-```
-
-- `input`: data flowing through the graph
-- `state`: agent's persistent memory
-
-### Return Values
-
-- `{:result r}` transform output
-- `{:state s}` update agent memory
-- `{:result r :state s}` both
-- `nil` or `{}` pass input unchanged
-
-### Lifecycle Hooks
-
-```clojure
-(aya/make-agent
-  {:nodes {:worker (fn [input state] {:result input})}
-   :edges {}
-   :caps {:main {:entry :worker}}
-   :lifecycle {:on-start (fn [ctx] {:n 0})
-               :on-stop (fn [ctx state] (println "cleanup"))}})
-```
-
-- `:on-start` `(fn [ctx] -> state)`: Runs on `start!` or `add-agents!`. Returns initial state.
-- `:on-stop` `(fn [ctx state] -> any)`: Runs on `stop!` or `remove-agent!`. Return value ignored.
-
-## Edge DSL
-
-```clojure
-;; Unconditional: keyword
-:edges {:parse :enrich, :enrich :score}
-
-;; Conditional: map (route key -> target node)
-:edges {:score {:approve :approve-node
-                :reject :reject-node
-                :done :ayatori/done}}
-
-;; Node decides the route
-(defn score [input _]
-  {:result (if (> (:confidence input) 0.8)
-             {:route :approve :data input}
-             {:route :reject :data input})})
-```
-
-`:ayatori/done` ends execution and returns `:data` as the final result.
-
----
+- [Agents](doc/agents.md) - Caps, deps, capability URIs, wiring
+- [Nodes](doc/nodes.md) - Node types, function signature, edges, lifecycle
+- [System](doc/system.md) - Runtime management, store
+- [LLM](doc/llm.md) - LLM node, tools, structured output, streaming
+- [Memory](doc/memory.md) - Conversation memory strategies
+- [Middleware](doc/middleware.md) - Observability hooks
 
 ## TODOs
 
 - [ ] Distributed execution: multi-node transport, capability-aware routing
-- [ ] [kex](https://github.com/serefayar/kex) integration: cryptographic capability tokens with attenuation
-- [ ] Capability revocation: revoke caps on agent removal for remote dependents
-- [ ] LLM providers: OpenAI, Anthropic, etc. (currently only Ollama)
-- [ ] MCP integration: server (expose agents) and client (consume tools)
-- [ ] Observability: topology visualization, async middleware dispatch
-
----
+- [ ] [kex](https://github.com/serefayar/kex) integration: cryptographic capability tokens
+- [ ] LLM providers: OpenAI, Anthropic (currently only Ollama)
+- [ ] MCP integration: server and client
 
 ## License
 

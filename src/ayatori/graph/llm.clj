@@ -2,22 +2,25 @@
   (:require
    [ayatori.llm.http :as http]
    [ayatori.llm.provider :as provider]
+   [ayatori.memory :as mem]
    [clojure.core.async :as async]
    [cheshire.core :as json]
    [malli.core :as m]
    [malli.error :as me]))
 
 (defn- init-state [config]
-  {:messages (if-let [p (:prompt config)]
-               [{:role :system :content p}]
-               [])
-   :turn-count 0
-   :phase :idle
-   :tool-calls []
-   :tool-results []})
+  (let [memory (mem/make-memory (:memory config))]
+    (when-let [p (:prompt config)]
+      (mem/add-message memory {:role :system :content p}))
+    {:memory memory
+     :turn-count 0
+     :phase :idle
+     :tool-calls []
+     :tool-results []}))
 
 (defn- add-message [state msg]
-  (update state :messages conj msg))
+  (mem/add-message (:memory state) msg)
+  state)
 
 (defn- invoke-llm [client params]
   (let [{:keys [url body]} (provider/build-request client params)]
@@ -66,7 +69,7 @@
         max-retries (or (:max-retries rf) 0)]
     (async/go
       (loop [state state, attempt 0]
-        (let [response (async/<! (call-llm config (:messages state)))]
+        (let [response (async/<! (call-llm config (mem/get-messages (:memory state))))]
           (if (instance? Throwable response)
             {:response response :state state}
             (if (or (:tool-calls response) (nil? (:schema rf)))
@@ -154,7 +157,7 @@
         state (-> state
                   (add-message {:role :user :content content})
                   (update :turn-count inc))
-        {:keys [url body]} (provider/build-stream-request (:client config) (:messages state) (:tools config))
+        {:keys [url body]} (provider/build-stream-request (:client config) (mem/get-messages (:memory state)) (:tools config))
         raw-ch (http/async-post-stream url body)
         out-ch (async/chan 32)]
     (async/go-loop []
