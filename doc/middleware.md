@@ -48,12 +48,6 @@ Emits all events via `tap>`:
              aya/start!))
 ```
 
-Use with `add-tap` to capture events:
-
-```clojure
-(add-tap println)
-```
-
 ## Custom Middleware
 
 ```clojure
