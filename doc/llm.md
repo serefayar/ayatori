@@ -66,16 +66,7 @@ Tool calls route through graph nodes, so middleware observes every step.
  ...}
 ```
 
-Returns a channel of tokens instead of waiting for the full response.
-
-```clojure
-(let [ch (async/<!! (aya/run sys :assistant :chat {:content "Hello"}))]
-  (loop []
-    (when-let [token (async/<!! ch)]
-      (print token)
-      (flush)
-      (recur))))
-```
+Returns a channel of tokens.
 
 ## Memory
 

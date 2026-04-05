@@ -11,16 +11,19 @@
 (defn- init-state [config]
   (let [memory (mem/make-memory (:memory config))]
     (when-let [p (:prompt config)]
-      (mem/add-message memory {:role :system :content p}))
+      (async/<!! (mem/add-message memory {:role :system :content p})))
     {:memory memory
      :turn-count 0
      :phase :idle
      :tool-calls []
      :tool-results []}))
 
-(defn- add-message [state msg]
-  (mem/add-message (:memory state) msg)
-  state)
+(defn- add-message
+  "Async helper. Returns channel yielding state."
+  [state msg]
+  (async/go
+    (async/<! (mem/add-message (:memory state) msg))
+    state))
 
 (defn- invoke-llm [client params]
   (let [{:keys [url body]} (provider/build-request client params)]
@@ -84,46 +87,48 @@
                     (let [error-msg (str "Response validation failed: "
                                          (pr-str (:errors result))
                                          ". Fix your response to match the schema.")
-                          state (-> state
-                                    (add-message (if (structured-response? response)
-                                                   {:role :assistant :content (pr-str response)}
-                                                   response))
-                                    (add-message {:role :user :content error-msg})
-                                    (update :turn-count inc))]
+                          state (async/<! (add-message state (if (structured-response? response)
+                                                               {:role :assistant :content (pr-str response)}
+                                                               response)))
+                          state (async/<! (add-message state {:role :user :content error-msg}))
+                          state (update state :turn-count inc)]
                       (check-max-turns! config state)
                       (recur state (inc attempt)))
                     {:response response :state state}))))))))))
 
-(defn- process-response [_config state response]
-  (if (:tool-calls response)
-    (let [state (-> state
-                    (add-message {:role :assistant :tool-calls (:tool-calls response)})
-                    (assoc :phase :collecting-tools
-                           :tool-calls (:tool-calls response)
-                           :tool-results []))]
-      {:result (next-tool-route state)
-       :state state})
-    (let [structured? (structured-response? response)
-          state (if structured?
-                  (update state :turn-count inc)
-                  (-> state
-                      (add-message response)
-                      (update :turn-count inc)))
-          data (if structured? response {:content (:content response)})]
-      {:result {:route :done :data data}
-       :state state})))
+(defn- process-response
+  "Async. Returns channel yielding {:result ... :state ...}."
+  [_config state response]
+  (async/go
+    (if (:tool-calls response)
+      (let [state (async/<! (add-message state {:role :assistant :tool-calls (:tool-calls response)}))
+            state (assoc state
+                         :phase :collecting-tools
+                         :tool-calls (:tool-calls response)
+                         :tool-results [])]
+        {:result (next-tool-route state)
+         :state state})
+      (let [structured? (structured-response? response)
+            state (if structured?
+                    (update state :turn-count inc)
+                    (-> (async/<! (add-message state response))
+                        (update :turn-count inc)))
+            data (if structured? response {:content (:content response)})]
+        {:result {:route :done :data data}
+         :state state}))))
 
 (defn- handle-idle [config state input]
-  (let [content (if (string? input) input (pr-str input))
-        state (-> state
-                  (add-message {:role :user :content content})
-                  (update :turn-count inc))]
-    (check-max-turns! config state)
-    (async/go
-      (let [{:keys [response state]} (async/<! (call-llm-validated config state))]
-        (if (instance? Throwable response)
-          response
-          (process-response config state response))))))
+  (async/go
+    (try
+      (let [content (if (string? input) input (pr-str input))
+            state (async/<! (add-message state {:role :user :content content}))
+            state (update state :turn-count inc)]
+        (check-max-turns! config state)
+        (let [{:keys [response state]} (async/<! (call-llm-validated config state))]
+          (if (instance? Throwable response)
+            response
+            (async/<! (process-response config state response)))))
+      (catch Exception e e))))
 
 (defn- handle-collecting-tools [config state input]
   (let [idx (count (:tool-results state))
@@ -134,29 +139,33 @@
     (if (< (count (:tool-results state)) (count (:tool-calls state)))
       (async/go {:result (next-tool-route state)
                  :state state})
-      (let [state (reduce (fn [s {:keys [tool-call-id content]}]
-                            (add-message s {:role :tool
-                                            :tool-call-id tool-call-id
-                                            :content content}))
-                          state
-                          (:tool-results state))
-            state (assoc state
-                         :phase :idle
-                         :tool-calls []
-                         :tool-results [])]
-        (check-max-turns! config state)
-        (async/go
-          (let [{:keys [response state]} (async/<! (call-llm-validated config state))]
-            (if (instance? Throwable response)
-              response
-              (process-response config state response))))))))
+      (async/go
+        (try
+          (let [state (loop [s state
+                             results (:tool-results state)]
+                        (if (empty? results)
+                          s
+                          (let [{:keys [tool-call-id content]} (first results)
+                                s (async/<! (add-message s {:role :tool
+                                                            :tool-call-id tool-call-id
+                                                            :content content}))]
+                            (recur s (rest results)))))
+                state (assoc state
+                             :phase :idle
+                             :tool-calls []
+                             :tool-results [])]
+            (check-max-turns! config state)
+            (let [{:keys [response state]} (async/<! (call-llm-validated config state))]
+              (if (instance? Throwable response)
+                response
+                (async/<! (process-response config state response)))))
+          (catch Exception e e))))))
 
 (defn- invoke-streaming [config input node-state]
   (let [state (or node-state (init-state config))
         content (if (string? input) input (pr-str input))
-        state (-> state
-                  (add-message {:role :user :content content})
-                  (update :turn-count inc))
+        state (async/<!! (add-message state {:role :user :content content}))
+        state (update state :turn-count inc)
         {:keys [url body]} (provider/build-stream-request (:client config) (mem/get-messages (:memory state)) (:tools config))
         raw-ch (http/async-post-stream url body)
         out-ch (async/chan 32)]
