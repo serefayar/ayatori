@@ -29,7 +29,7 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('**/deps.edn', '**/bb.edn') }}
       - name: Run tests and deploy
         run: clojure -T:build ci
-      - name: depploy snaphost
+      - name: deploy snapshot
         run: clojure -T:build deploy
         env:
           CLOJARS_PASSWORD: ${{secrets.DEPLOY_TOKEN}}

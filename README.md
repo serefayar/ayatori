@@ -1,6 +1,6 @@
 # Ayatori
 [![Run tests](https://github.com/serefayar/ayatori/actions/workflows/test.yml/badge.svg)](https://github.com/serefayar/ayatori/actions/workflows/test.yml)
-
+[![Clojars Project](https://img.shields.io/clojars/v/com.github.serefayar/ayatori.svg)](https://clojars.org/com.github.serefayar/ayatori)
 <img src="./resources/ayatori.png" align="right" height="150" />
 
 > \
