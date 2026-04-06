@@ -5,8 +5,8 @@
             [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.serefayar/ayatori)
-;(def version "0.1.0-SNAPSHOT")
-(def version (format "0.1.%s" (b/git-count-revs nil)))
+(def version "0.1.1-SNAPSHOT")
+;;(def version (format "0.1.%s" (b/git-count-revs nil)))
 (def class-dir "target/classes")
 
 (defn test "Run all the tests." [opts]
