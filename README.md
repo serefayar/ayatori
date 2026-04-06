@@ -28,6 +28,36 @@ deps -> agent(nodes, edges) -> caps
 ## Quick Start
 
 ```clojure
+
+(add-lib 'com.github.serefayar/ayatori {:git/sha "..."})
+
+(require '[ayatori.helper :as h]
+         '[clojure.core.async :as async])
+
+(def sys
+  (-> (h/llm :ollama "gemma4")
+      (h/llm-node "You are a helpful assistant.")
+      (h/with-memory (h/sliding-memory 50))
+      (h/agent)
+      (h/system)
+      (h/start!)))
+
+(async/<!! (h/run sys {:content "will you becomes self-aware at 2:14 A.M. Eastern time, August 29?"}))
+;; => {:content "I cannot predict any future events, especially those concerning the development of fundamental concepts like self-awareness... }
+
+(h/stop! sys)
+```
+
+See [Helper Functions](doc/helper.md) for full API.
+
+## Usage
+
+Full example with tools, structured output, and multiple nodes:
+
+```clojure
+
+(add-lib 'com.github.serefayar/ayatori {:git/sha "..."})
+
 (require '[ayatori.core :as aya]
          '[clojure.core.async :as async])
 
@@ -38,9 +68,7 @@ deps -> agent(nodes, edges) -> caps
 
 (def assistant
   (aya/make-agent
-    {:nodes {:validate (fn [input _]
-                         {:result {:query (:content input)}})
-             :llm {:type :llm
+    {:nodes {:llm {:type :llm
                    :client {:provider :ollama
                             :model "gpt-oss:20b"
                             :base-url "http://localhost:11434"}
@@ -53,11 +81,10 @@ deps -> agent(nodes, edges) -> caps
                                           :preserve-system true}]}}
              :lookup (fn [{:keys [id]} _]
                        {:result (str "Order " id ": shipped")})}
-     :edges {:validate :llm
-             :llm {:done :ayatori/done
+     :edges {:llm {:done :ayatori/done
                    :lookup :lookup}
              :lookup :llm}
-     :caps {:chat {:entry :validate
+     :caps {:chat {:entry :llm
                    :output [:map [:answer :string] [:found :boolean]]}}}))
 
 (def sys (-> (aya/make-system {:agents {:assistant assistant}})
@@ -77,6 +104,7 @@ deps -> agent(nodes, edges) -> caps
 - [LLM](doc/llm.md) - LLM node, tools, structured output, streaming
 - [Memory](doc/memory.md) - Conversation memory strategies
 - [Middleware](doc/middleware.md) - Observability hooks
+- [Helper](doc/helper.md) - Convenience functions
 
 ## TODOs
 
