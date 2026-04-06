@@ -5,8 +5,7 @@
             [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.serefayar/ayatori)
-(def version "0.1.0-SNAPSHOT")
-#_ ; alternatively, use MAJOR.MINOR.COMMITS:
+;(def version "0.1.0-SNAPSHOT")
 (def version (format "1.0.%s" (b/git-count-revs nil)))
 (def class-dir "target/classes")
 
