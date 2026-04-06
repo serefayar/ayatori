@@ -5,4 +5,5 @@
   ["System" {:file "doc/system.md"}]
   ["LLM" {:file "doc/llm.md"}]
   ["Memory" {:file "doc/memory.md"}]
-  ["Middleware" {:file "doc/middleware.md"}]]}
+  ["Middleware" {:file "doc/middleware.md"}]
+  ["Helper" {:file "doc/helper.md"}]]}

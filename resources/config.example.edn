@@ -1,0 +1,33 @@
+{;; LLM client profiles
+ :llm-clients
+ {:ollama {:provider :ollama
+           :model "llama3:8b"
+           :base-url #or [#env OLLAMA_URL "http://localhost:11434"]}
+  :openai {:provider :openai
+           :model "gpt-4o"
+           :api-key #env OPENAI_API_KEY}
+  :anthropic {:provider :anthropic
+              :model "claude-sonnet-4-20250514"
+              :api-key #env ANTHROPIC_API_KEY}}
+
+ ;; Memory configurations
+ :memory
+ {:chat {:strategies [{:type :sliding-window
+                       :max-messages 50
+                       :preserve-system true}]}
+  :long {:strategies [{:type :token-budget
+                       :max-tokens 8000
+                       :preserve-system true}]}}
+
+ ;; System settings (profile-based)
+ :system
+ {:host #profile {:dev "localhost"
+                  :test "localhost"
+                  :prod "0.0.0.0"}
+  :port #profile {:dev 9000
+                  :test 9001
+                  :prod 8080}
+  :store #profile {:dev {:type :atom}
+                   :test {:type :atom}
+                   :prod {:type :edn
+                          :path #or [#env AYATORI_STATE_PATH "/var/ayatori/state.edn"]}}}}
