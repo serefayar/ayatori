@@ -17,6 +17,46 @@ LLM nodes handle conversations, tool calling, and structured output.
  :max-turns 50}
 ```
 
+## Providers
+
+### Ollama (local)
+
+```clojure
+{:provider :ollama
+ :model "llama3.2"
+ :base-url "http://localhost:11434"}
+```
+
+### OpenAI
+
+```clojure
+{:provider :openai
+ :model "gpt-4o"
+ :api-key "sk-..."}
+```
+
+### Anthropic (Claude)
+
+```clojure
+{:provider :anthropic
+ :model "claude-sonnet-4-20250514"
+ :api-key "sk-ant-..."}
+```
+
+### Helper Functions
+
+```clojure
+(require '[ayatori.helper :as h])
+
+(h/llm :ollama "llama3.2")
+(h/llm :openai "gpt-4o")
+(h/llm :anthropic "claude-sonnet-4-20250514")
+```
+
+Helper functions read API keys from environment variables:
+- OpenAI: `OPENAI_API_KEY`
+- Anthropic: `ANTHROPIC_API_KEY`
+
 ## Tool Calling
 
 ```clojure

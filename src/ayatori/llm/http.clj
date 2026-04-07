@@ -13,23 +13,29 @@
   (-> (HttpClient/newBuilder)
       (.build)))
 
-(defn async-post
-  "Sends async POST with JSON body. Returns promise-chan of parsed JSON response."
-  [url body]
-  (let [ch (async/promise-chan)
-        request (-> (HttpRequest/newBuilder)
+(defn- build-request [url body headers accept-type]
+  (let [builder (-> (HttpRequest/newBuilder)
                     (.uri (URI/create url))
                     (.header "Content-Type" "application/json")
-                    (.header "Accept" "application/json")
-                    (.POST (HttpRequest$BodyPublishers/ofString (json/generate-string body)))
-                    (.build))]
-    (-> ^CompletableFuture (.sendAsync client request (HttpResponse$BodyHandlers/ofString))
-        (.thenAccept (fn [^HttpResponse response]
-                       (async/put! ch (json/parse-string (.body response) true))))
-        (.exceptionally (fn [error]
-                          (async/put! ch error)
-                          nil)))
-    ch))
+                    (.header "Accept" accept-type)
+                    (.POST (HttpRequest$BodyPublishers/ofString (json/generate-string body))))]
+    (doseq [[k v] headers]
+      (.header builder k v))
+    (.build builder)))
+
+(defn async-post
+  "Sends async POST with JSON body. Returns promise-chan of parsed JSON response."
+  ([url body] (async-post url body nil))
+  ([url body headers]
+   (let [ch (async/promise-chan)
+         request (build-request url body headers "application/json")]
+     (-> ^CompletableFuture (.sendAsync client request (HttpResponse$BodyHandlers/ofString))
+         (.thenAccept (fn [^HttpResponse response]
+                        (async/put! ch (json/parse-string (.body response) true))))
+         (.exceptionally (fn [error]
+                           (async/put! ch error)
+                           nil)))
+     ch)))
 
 (defn- parse-sse-line [line]
   (when (str/starts-with? line "data: ")
@@ -39,14 +45,10 @@
 
 (defn async-post-stream
   "Sends async POST for SSE streaming. Returns channel that emits parsed chunks."
-  [url body]
-  (let [ch (async/chan 32)
-        request (-> (HttpRequest/newBuilder)
-                    (.uri (URI/create url))
-                    (.header "Content-Type" "application/json")
-                    (.header "Accept" "text/event-stream")
-                    (.POST (HttpRequest$BodyPublishers/ofString (json/generate-string body)))
-                    (.build))]
+  ([url body] (async-post-stream url body nil))
+  ([url body headers]
+   (let [ch (async/chan 32)
+         request (build-request url body headers "text/event-stream")]
     (-> ^CompletableFuture (.sendAsync client request (HttpResponse$BodyHandlers/ofInputStream))
         (.thenAccept (fn [^HttpResponse response]
                        (async/thread
@@ -63,4 +65,4 @@
                           (async/put! ch error)
                           (async/close! ch)
                           nil)))
-    ch))
+    ch)))
