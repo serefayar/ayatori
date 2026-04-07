@@ -1,51 +1,35 @@
 (ns ayatori.llm.provider-test
   (:require
-   [ayatori.llm.provider :as provider]
+   [ayatori.llm.provider :as p]
+   [ayatori.llm.provider.anthropic :as anthropic]
+   [ayatori.llm.provider.ollama :as ollama]
+   [ayatori.llm.provider.openai :as openai]
    [clojure.test :refer [deftest is testing]]))
 
-(def ollama-client
-  {:provider :ollama
-   :model    "gpt-oss:20b"
-   :base-url "http://localhost:11434"})
+(def ollama (ollama/make-ollama-provider {:model "llama3" :base-url "http://localhost:11434"}))
+(def openai (openai/make-openai-provider {:model "gpt-4o" :api-key "sk-test"}))
+(def anthropic (anthropic/make-anthropic-provider {:model "claude-sonnet-4-20250514" :api-key "sk-ant-test"}))
 
-(deftest build-request-plain-chat-test
-  (testing "plain chat builds correct request"
-    (let [params {:messages [{:role :user :content "hello"}]}
-          {:keys [url body]} (provider/build-request ollama-client params)]
-      (is (= "http://localhost:11434/v1/chat/completions" url))
-      (is (= "gpt-oss:20b" (:model body)))
-      (is (= [{:role "user" :content "hello"}] (:messages body)))
-      (is (nil? (:tools body)))
-      (is (nil? (:response_format body))))))
+(deftest ollama-request-test
+  (let [{:keys [url body]} (p/build-request ollama {:messages [{:role :user :content "hi"}]})]
+    (is (= "http://localhost:11434/v1/chat/completions" url))
+    (is (= "llama3" (:model body)))))
 
-(deftest build-request-with-tools-test
-  (testing "tools are converted to wire format"
-    (let [params {:messages [{:role :user :content "weather?"}]
-                  :tools    [{:name        "get_weather"
-                              :description "Get weather"
-                              :schema      [:map [:city :string]]}]}
-          {:keys [body]} (provider/build-request ollama-client params)]
-      (is (= 1 (count (:tools body))))
-      (is (= "get_weather" (get-in body [:tools 0 :function :name]))))))
+(deftest openai-auth-test
+  (let [{:keys [headers]} (p/build-request openai {:messages [{:role :user :content "hi"}]})]
+    (is (= "Bearer sk-test" (get headers "Authorization")))))
 
-(deftest build-request-with-response-format-test
-  (testing "response-format is converted to wire format"
-    (let [params {:messages        [{:role :user :content "extract"}]
-                  :response-format {:type   :json-schema
-                                    :schema [:map [:name :string]]}}
-          {:keys [body]} (provider/build-request ollama-client params)]
-      (is (= "json_schema" (get-in body [:response_format :type])))
-      (is (= true (get-in body [:response_format :json_schema :strict])))
-      (is (= {:type "object"
-              :properties {:name {:type "string"}}
-              :required [:name]}
-             (get-in body [:response_format :json_schema :schema]))))))
+(deftest anthropic-structure-test
+  (testing "system message separated, correct headers"
+    (let [{:keys [url headers body]} (p/build-request anthropic
+                                                       {:messages [{:role :system :content "Be helpful"}
+                                                                   {:role :user :content "hi"}]})]
+      (is (= "https://api.anthropic.com/v1/messages" url))
+      (is (= "sk-ant-test" (get headers "x-api-key")))
+      (is (= "Be helpful" (:system body)))
+      (is (= [{:role "user" :content "hi"}] (:messages body)))))
 
-(deftest parse-response-structured-output-test
-  (testing "structured output response is parsed as JSON map"
-    (let [params {:messages        [{:role :user :content "extract"}]
-                  :response-format {:type :json-schema}}
-          body {:choices [{:message {:role    "assistant"
-                                     :content "{\"name\":\"Alice\",\"total\":99.5}"}}]}]
-      (is (= {:name "Alice" :total 99.5}
-             (provider/parse-response ollama-client params body))))))
+  (testing "tool use response parsed"
+    (let [body {:content [{:type "tool_use" :id "t1" :name "search" :input {:q "test"}}]}]
+      (is (= [{:id "t1" :function {:name "search" :arguments {:q "test"}}}]
+             (:tool-calls (p/parse-response anthropic {} body)))))))

@@ -1,12 +1,24 @@
 (ns ayatori.graph.llm
   (:require
    [ayatori.llm.http :as http]
-   [ayatori.llm.provider :as provider]
+   [ayatori.llm.provider :as p]
+   [ayatori.llm.provider.anthropic :as anthropic]
+   [ayatori.llm.provider.ollama :as ollama]
+   [ayatori.llm.provider.openai :as openai]
    [ayatori.memory :as mem]
-   [clojure.core.async :as async]
    [cheshire.core :as json]
+   [clojure.core.async :as async]
    [malli.core :as m]
    [malli.error :as me]))
+
+(defn- make-provider
+  "Creates provider record from client config map."
+  [{:keys [provider] :as config}]
+  (case provider
+    :ollama (ollama/make-ollama-provider config)
+    :openai (openai/make-openai-provider config)
+    :anthropic (anthropic/make-anthropic-provider config)
+    (throw (ex-info "Unknown LLM provider" {:provider provider}))))
 
 (defn- init-state [config]
   (let [memory (mem/make-memory (:memory config))]
@@ -25,23 +37,27 @@
     (async/<! (mem/add-message (:memory state) msg))
     state))
 
-(defn- invoke-llm [client params]
-  (let [{:keys [url body]} (provider/build-request client params)]
+(defn- invoke-llm [provider params]
+  (let [{:keys [url body headers]} (p/build-request provider params)]
     (async/go
-      (let [response (async/<! (http/async-post url body))]
+      (let [response (async/<! (http/async-post url body headers))]
         (if (instance? Throwable response)
           response
-          (provider/parse-response client params response))))))
+          (p/parse-response provider params response))))))
 
 (defn- call-llm [config messages]
-  (let [invoke-fn (or (:invoke-fn config) invoke-llm)
+  (let [custom-invoke? (:invoke-fn config)
+        invoke-fn (or custom-invoke? invoke-llm)
+        client-or-provider (if custom-invoke?
+                             (:client config)
+                             (make-provider (:client config)))
         params (cond-> {:messages messages}
                  (seq (:tools config))
                  (assoc :tools (:tools config))
 
                  (:response-format config)
                  (assoc :response-format (:response-format config)))]
-    (invoke-fn (:client config) params)))
+    (invoke-fn client-or-provider params)))
 
 (defn- next-tool-route [state]
   (let [idx (count (:tool-results state))
@@ -166,14 +182,15 @@
         content (if (string? input) input (pr-str input))
         state (async/<!! (add-message state {:role :user :content content}))
         state (update state :turn-count inc)
-        {:keys [url body]} (provider/build-stream-request (:client config) (mem/get-messages (:memory state)) (:tools config))
-        raw-ch (http/async-post-stream url body)
+        provider (when (:client config) (make-provider (:client config)))
+        {:keys [url body headers]} (p/build-stream-request provider (mem/get-messages (:memory state)) (:tools config))
+        raw-ch (http/async-post-stream url body headers)
         out-ch (async/chan 32)]
     (async/go-loop []
       (if-let [chunk (async/<! raw-ch)]
         (do
           (when-not (instance? Throwable chunk)
-            (when-let [content (provider/parse-stream-chunk (:client config) chunk)]
+            (when-let [content (p/parse-stream-chunk provider chunk)]
               (async/>! out-ch content)))
           (recur))
         (async/close! out-ch)))

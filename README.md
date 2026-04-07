@@ -1,6 +1,6 @@
 # Ayatori
 [![Run tests](https://github.com/serefayar/ayatori/actions/workflows/test.yml/badge.svg)](https://github.com/serefayar/ayatori/actions/workflows/test.yml)
-[![Clojars Project](https://img.shields.io/clojars/v/com.github.serefayar/ayatori.svg)](https://clojars.org/com.github.serefayar/ayatori)
+[![Clojars Project](https://img.shields.io/clojars/v/com.github.serefayar/ayatori.svg?include_prereleases)](https://clojars.org/com.github.serefayar/ayatori)
 <img src="./resources/ayatori.png" align="right" height="150" />
 
 > \
@@ -42,9 +42,9 @@ deps -> agent(nodes, edges) -> caps
       (h/system)
       (h/start!)))
 
-(async/<!! (h/run sys {:content "will you becomes self-aware at 2:14 A.M. Eastern time, August 29?"}))
+(async/<!! (h/run sys {:content "will you become self-aware at 2:14 A.M. Eastern time, August 29?"}))
 ;; => {:content "I cannot predict any future events, especially those concerning the development of fundamental concepts like self-awareness... }
-
+;; damn it! :)
 (h/stop! sys)
 ```
 
@@ -110,7 +110,6 @@ Full example with tools, structured output, and multiple nodes:
 
 - [ ] Distributed execution: multi-node transport, capability-aware routing
 - [ ] [kex](https://github.com/serefayar/kex) integration: cryptographic capability tokens
-- [ ] LLM providers: OpenAI, Anthropic (currently only Ollama)
 - [ ] MCP integration: server and client
 
 ## License
