@@ -75,9 +75,8 @@ Helper functions read API keys from environment variables:
                             :base-url "http://localhost:11434"}
                    :prompt "You are a helpful assistant."
                    :tools [search-tool]}
-             :search (fn [input _] {:result ((:handler search-tool) input)})}
-     :edges {:llm {:done :ayatori/done
-                   :search :search}
+             :search (fn [input] {:result ((:handler search-tool) input)})}
+     :edges {:llm {:search :search}  ;; :done implicit
              :search :llm}
      :caps {:chat {:entry :llm}}}))
 ```
@@ -100,13 +99,65 @@ Tool calls route through graph nodes, so middleware observes every step.
 
 ## Streaming
 
+Enable streaming to receive tokens as they arrive:
+
 ```clojure
 {:type :llm
  :stream true
- ...}
+ :client {...}
+ :prompt "..."}
 ```
 
-Returns a channel of tokens.
+Or with helper:
+
+```clojure
+(-> (h/llm :ollama "llama3.2")
+    (h/llm-node "You are helpful.")
+    (h/with-streaming))
+```
+
+### Channel Format
+
+Streaming returns a regular channel (not promise-chan) with multiple values:
+
+```clojure
+;; Token events (have :type)
+{:type :token :delta "Hello"}
+{:type :token :delta " world"}
+...
+
+;; Final result (no :type, same as non-streaming)
+{:role :assistant :content "Hello world"}
+```
+
+### Consuming
+
+```clojure
+;; Blocking
+(let [ch (h/run sys {:content "Hi"})]
+  (loop []
+    (when-let [msg (async/<!! ch)]
+      (if (:type msg)
+        (do (print (:delta msg)) (flush) (recur))
+        msg))))  ;; returns final result
+
+;; Non-blocking (go-loop)
+(let [ch (h/run sys {:content "Hi"})]
+  (async/go-loop []
+    (when-let [msg (async/<! ch)]
+      (if (:type msg)
+        (do (print (:delta msg)) (flush) (recur))
+        (println "Done:" msg)))))
+```
+
+### With Tool Calls
+
+Streaming works with tool calling. Tokens stream until a tool call arrives, then the tool executes, and streaming resumes:
+
+```clojure
+;; Stream: "Let me " -> tool call -> tool result -> "search for that."
+;; Final: {:role :assistant :content "Let me search for that."}
+```
 
 ## Memory
 

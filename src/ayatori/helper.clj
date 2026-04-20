@@ -48,6 +48,11 @@
 (defn with-max-turns [node n]
   (assoc node :max-turns n))
 
+(defn with-streaming
+  "Enables streaming for LLM node."
+  [node]
+  (assoc node :stream true))
+
 (defn with-response-format
   "Adds JSON schema response format."
   [node schema]
@@ -61,24 +66,24 @@
         tool-edges (zipmap tool-names tool-names)
         handler-edges (when (seq tool-nodes)
                         (zipmap (keys tool-nodes) (repeat :llm)))
-        edges (cond-> {:llm (merge {:done :ayatori/done} tool-edges)}
+        edges (cond-> {:llm tool-edges}  ;; :done implicit terminal
                 handler-edges (merge handler-edges))]
     (aya/make-agent
-      (merge {:nodes (merge {:llm llm-node*} tool-nodes)
-              :edges edges
-              :caps {:main {:entry :llm}}}
-             opts))))
+     (merge {:nodes (merge {:llm llm-node*} tool-nodes)
+             :edges edges
+             :caps {:main {:entry :llm}}}
+            opts))))
 
 (defn system
   "Creates system from agent or agent map."
   [agent-or-agents & [opts]]
   (let [agents (if (and (map? agent-or-agents)
-                        (not (contains? agent-or-agents :compiled)))
+                        (not (contains? agent-or-agents :topology)))
                  agent-or-agents
                  {:main agent-or-agents})]
     (aya/make-system (merge {:agents agents} opts))))
 
-(defn with-wiring [sys wiring]
+(defn with-wiring! [sys wiring]
   (reset! (:wiring sys) wiring)
   sys)
 

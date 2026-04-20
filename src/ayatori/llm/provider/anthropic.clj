@@ -3,17 +3,16 @@
   (:require
    [ayatori.llm.provider :as p]
    [cheshire.core :as json]
+   [clojure.string :as str]
    [malli.json-schema :as json-schema]))
 
 (defn- extract-system-message
   "Separates system message from the message list.
-   Returns [system-text other-messages]."
+   Returns {:system text-or-nil :other messages}."
   [messages]
-  (let [system-msgs (filter #(= :system (:role %)) messages)
-        other-msgs (remove #(= :system (:role %)) messages)]
-    [(when (seq system-msgs)
-       (apply str (interpose "\n" (map :content system-msgs))))
-     other-msgs]))
+  (let [{system true other false} (group-by #(= :system (:role %)) messages)]
+    {:system (when (seq system) (str/join "\n" (map :content system)))
+     :other (or other [])}))
 
 (defn- tool-calls->anthropic-content
   "Converts internal tool-calls to Anthropic content blocks."
@@ -72,12 +71,10 @@
   "Parses Anthropic response into normalized format."
   [params body]
   (let [content (:content body)
-        stop-reason (:stop_reason body)
-        text-blocks (filter #(= "text" (:type %)) content)
-        tool-blocks (filter #(= "tool_use" (:type %)) content)
-        text-content (apply str (map :text text-blocks))]
+        {:strs [text tool_use]} (group-by :type content)
+        text-content (str/join (map :text text))]
     (cond
-      (seq tool-blocks)
+      (seq tool_use)
       (cond-> {:role :assistant
                :tool-calls (parse-anthropic-tool-use content)}
         (seq text-content) (assoc :content text-content))
@@ -92,9 +89,9 @@
 (defrecord AnthropicProvider [model base-url api-key]
   p/ILLMProvider
   (build-request [_ params]
-    (let [[system msgs] (extract-system-message (:messages params))
+    (let [{:keys [system other]} (extract-system-message (:messages params))
           body (cond-> {:model model
-                        :messages (messages->anthropic-wire msgs)
+                        :messages (messages->anthropic-wire other)
                         :max_tokens 4096}
                  system
                  (assoc :system system)
@@ -103,30 +100,17 @@
                  (assoc :tools (tools->anthropic-wire (:tools params)))
 
                  (:temperature params)
-                 (assoc :temperature (:temperature params)))]
+                 (assoc :temperature (:temperature params))
+
+                 (:stream params)
+                 (assoc :stream true))]
       {:url (str base-url "/v1/messages")
        :headers {"x-api-key" api-key
                  "anthropic-version" "2023-06-01"}
        :body body}))
 
   (parse-response [_ params body]
-    (parse-anthropic-response params body))
-
-  (build-stream-request [_ messages tools]
-    (let [[system msgs] (extract-system-message messages)]
-      {:url (str base-url "/v1/messages")
-       :headers {"x-api-key" api-key
-                 "anthropic-version" "2023-06-01"}
-       :body (cond-> {:model model
-                      :messages (messages->anthropic-wire msgs)
-                      :max_tokens 4096
-                      :stream true}
-               system (assoc :system system)
-               tools (assoc :tools (tools->anthropic-wire tools)))}))
-
-  (parse-stream-chunk [_ chunk]
-    (when (= "content_block_delta" (:type chunk))
-      (get-in chunk [:delta :text]))))
+    (parse-anthropic-response params body)))
 
 (defn make-anthropic-provider
   "Creates an AnthropicProvider from config map."

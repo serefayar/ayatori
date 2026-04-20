@@ -2,14 +2,13 @@
   "LLM provider protocol and shared helpers."
   (:require
    [cheshire.core :as json]
+   [clojure.string :as str]
    [malli.json-schema :as json-schema]))
 
 (defprotocol ILLMProvider
   "Protocol for LLM provider implementations."
   (build-request [this params] "Builds provider-specific HTTP request from params.")
-  (parse-response [this params body] "Parses provider response into normalized format.")
-  (build-stream-request [this messages tools] "Builds provider-specific streaming request.")
-  (parse-stream-chunk [this chunk] "Extracts content delta from streaming chunk."))
+  (parse-response [this params body] "Parses provider response into normalized format."))
 
 (defn tool-calls->wire
   "Converts internal tool-calls to OpenAI wire format."
@@ -25,11 +24,11 @@
 (defn messages->wire
   "Converts internal messages to OpenAI wire format."
   [messages]
-  (mapv (fn [m]
-          (cond-> {:role (name (:role m))}
-            (contains? m :content)    (assoc :content (:content m))
-            (:tool-calls m)           (assoc :tool_calls (tool-calls->wire (:tool-calls m)))
-            (:tool-call-id m)         (assoc :tool_call_id (:tool-call-id m))))
+  (mapv (fn [{:keys [role content tool-calls tool-call-id]}]
+          (cond-> {:role (name role)}
+            content      (assoc :content content)
+            tool-calls   (assoc :tool_calls (tool-calls->wire tool-calls))
+            tool-call-id (assoc :tool_call_id tool-call-id)))
         messages))
 
 (defn tools->wire
@@ -50,7 +49,8 @@
                   :json_schema {:name "response"
                                 :strict true
                                 :schema (json-schema/transform schema)}}
-    :json-object {:type "json_object"}))
+    :json-object {:type "json_object"}
+    (throw (ex-info "Unknown response format type" {:type type}))))
 
 (defn parse-tool-calls
   "Parses tool_calls from OpenAI wire format."
@@ -67,17 +67,61 @@
 (defn parse-choice
   "Parses a single choice from OpenAI-compatible response."
   [choice params]
-  (let [message    (:message choice)
-        tool-calls (:tool_calls message)]
+  (let [{:keys [content tool_calls]} (:message choice)]
     (cond
-      (seq tool-calls)
+      (seq tool_calls)
       (cond-> {:role :assistant
-               :tool-calls (parse-tool-calls tool-calls)}
-        (contains? message :content) (assoc :content (:content message)))
+               :tool-calls (parse-tool-calls tool_calls)}
+        content (assoc :content content))
 
       (:response-format params)
-      (json/parse-string (:content message) true)
+      (json/parse-string content true)
 
       :else
-      {:role :assistant
-       :content (:content message)})))
+      {:role :assistant :content content})))
+
+(defn parse-openai-response
+  "Parses OpenAI-compatible response into normalized format."
+  [params body]
+  (let [choice (first (:choices body))]
+    (when-not choice
+      (throw (ex-info "No choices in LLM response" {:body body})))
+    (parse-choice choice params)))
+
+;; SSE Streaming Parsers
+
+(defn parse-openai-sse
+  "Parses OpenAI/Ollama SSE line. Returns event map or nil."
+  [line]
+  (when (and (str/starts-with? line "data: ")
+             (not= (subs line 6) "[DONE]"))
+    (try
+      (let [json-data (json/parse-string (subs line 6) true)
+            {:keys [content tool_calls]} (get-in json-data [:choices 0 :delta])
+            finish-reason (get-in json-data [:choices 0 :finish_reason])]
+        (cond-> {}
+          content       (assoc :delta content)
+          tool_calls    (assoc :tool-calls (parse-tool-calls tool_calls))
+          finish-reason (assoc :finish-reason finish-reason)))
+      (catch Exception _ nil))))
+
+(defn parse-anthropic-sse
+  "Parses Anthropic SSE line. Returns event map or nil."
+  [line]
+  (when (str/starts-with? line "data: ")
+    (try
+      (let [json-data (json/parse-string (subs line 6) true)]
+        (case (:type json-data)
+          "content_block_delta"
+          (when-let [text (get-in json-data [:delta :text])]
+            {:delta text})
+
+          "message_delta"
+          (when-let [stop-reason (get-in json-data [:delta :stop_reason])]
+            {:finish-reason stop-reason})
+
+          "message_stop"
+          {:finish-reason "stop"}
+
+          nil))
+      (catch Exception _ nil))))

@@ -22,8 +22,8 @@
 (deftest anthropic-structure-test
   (testing "system message separated, correct headers"
     (let [{:keys [url headers body]} (p/build-request anthropic
-                                                       {:messages [{:role :system :content "Be helpful"}
-                                                                   {:role :user :content "hi"}]})]
+                                                      {:messages [{:role :system :content "Be helpful"}
+                                                                  {:role :user :content "hi"}]})]
       (is (= "https://api.anthropic.com/v1/messages" url))
       (is (= "sk-ant-test" (get headers "x-api-key")))
       (is (= "Be helpful" (:system body)))

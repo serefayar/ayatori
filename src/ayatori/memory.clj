@@ -13,14 +13,32 @@
 (defn- default-token-count [msg]
   (max 1 (quot (count (or (:content msg) "")) 4)))
 
+(defn- partition-by-system
+  "Separates system messages from others. Returns {:system [...] :other [...]}."
+  [messages]
+  (let [{system true other false} (group-by #(= :system (:role %)) messages)]
+    {:system (or system []) :other (or other [])}))
+
+(defn- trim-to-budget
+  "Trims messages from front until total tokens <= budget. Uses cumulative sums."
+  [msgs count-fn budget]
+  (let [tokens (mapv count-fn msgs)
+        total (reduce + 0 tokens)]
+    (if (<= total budget)
+      msgs
+      (let [excess (- total budget)]
+        (loop [dropped 0 idx 0]
+          (if (or (>= idx (dec (count msgs)))
+                  (>= dropped excess))
+            (vec (drop idx msgs))
+            (recur (+ dropped (nth tokens idx)) (inc idx))))))))
+
 (defn- sliding-window-strategy
   [messages _msg {:keys [max-messages preserve-system] :or {max-messages 50}}]
   (if preserve-system
-    (let [system-msgs (filterv #(= :system (:role %)) messages)
-          other-msgs (filterv #(not= :system (:role %)) messages)
-          keep-count (- max-messages (count system-msgs))
-          kept (vec (take-last keep-count other-msgs))]
-      (into system-msgs kept))
+    (let [{:keys [system other]} (partition-by-system messages)
+          keep-count (- max-messages (count system))]
+      (into system (vec (take-last keep-count other))))
     (vec (take-last max-messages messages))))
 
 (defn- token-budget-strategy
@@ -28,20 +46,16 @@
                   :or {max-tokens 4000 preserve-system true}}]
   (let [count-fn (or count-fn default-token-count)]
     (if preserve-system
-      (let [system-msgs (filterv #(= :system (:role %)) messages)
-            other-msgs (filterv #(not= :system (:role %)) messages)
-            system-tokens (reduce + 0 (map count-fn system-msgs))
+      (let [{:keys [system other]} (partition-by-system messages)
+            system-tokens (reduce + 0 (map count-fn system))
             budget (- max-tokens system-tokens)]
-        (loop [msgs other-msgs]
-          (if (or (<= (count msgs) 1)
-                  (<= (reduce + 0 (map count-fn msgs)) budget))
-            (into system-msgs msgs)
-            (recur (vec (rest msgs))))))
-      (loop [msgs messages]
-        (if (or (<= (count msgs) 1)
-                (<= (reduce + 0 (map count-fn msgs)) max-tokens))
-          msgs
-          (recur (vec (rest msgs))))))))
+        (into system (trim-to-budget other count-fn budget)))
+      (trim-to-budget messages count-fn max-tokens))))
+
+(defn- summary?
+  "Returns true if message content starts with [Summary]."
+  [msg]
+  (some-> msg :content (str/starts-with? "[Summary]")))
 
 (defn- summary-strategy
   [messages _msg {:keys [threshold keep-recent llm prompt invoke-fn]
@@ -50,15 +64,9 @@
   (async/go
     (if (< (count messages) threshold)
       messages
-      (let [;; Keep only non-summary system messages (like initial prompt)
-            original-system (filterv #(and (= :system (:role %))
-                                           (not (str/starts-with? (or (:content %) "") "[Summary]")))
-                                     messages)
-            other-msgs (filterv #(or (not= :system (:role %))
-                                     (str/starts-with? (or (:content %) "") "[Summary]"))
-                                messages)
-            ;; Filter out old summaries from other-msgs for summarization
-            non-summary-msgs (filterv #(not (str/starts-with? (or (:content %) "") "[Summary]")) other-msgs)
+      (let [{:keys [system other]} (partition-by-system messages)
+            original-system (filterv (complement summary?) system)
+            non-summary-msgs (filterv (complement summary?) other)
             to-summarize (vec (drop-last keep-recent non-summary-msgs))
             to-keep (vec (take-last keep-recent non-summary-msgs))]
         (if (empty? to-summarize)

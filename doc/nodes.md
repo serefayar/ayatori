@@ -6,7 +6,7 @@ Nodes are functions or special types that process data in the graph.
 
 | Type | Definition | Description |
 |------|-----------|-------------|
-| Function | `(fn [input state] -> {:result ... :state ...})` | Transform data, update state |
+| Function | `(fn [input] -> output)` | Transform data |
 | LLM | `{:type :llm :client ... :prompt ...}` | Conversation, tools, structured output |
 | Fan-out | `{:type :fan-out :branches [...]}` | Parallel execution |
 
@@ -15,18 +15,44 @@ Nodes are functions or special types that process data in the graph.
 All function nodes have the same signature:
 
 ```clojure
-(fn [input state] -> {:result ... :state ...})
+(fn [input] -> output)
 ```
 
 - `input`: data flowing through the graph
-- `state`: agent's persistent memory
+- Returns: data to pass to next node
 
 ### Return Values
 
-- `{:result r}` transform output
-- `{:state s}` update agent memory
-- `{:result r :state s}` both
-- `nil` or `{}` pass input unchanged
+- Any value: passed to next node
+- `{:result r}` unwraps to `r`
+- `nil` or `{}` passes input unchanged
+
+### REPL Reloadability
+
+Pass vars instead of functions for hot reloading during development:
+
+```clojure
+(defn my-transform [input]
+  {:result {:processed (:raw input)}})
+
+;; Use var for REPL reloadability
+(def agent
+  (aya/make-agent
+    {:nodes {:transform #'my-transform}  ;; var, not fn
+     :edges {}
+     :caps {:main {:entry :transform}}}))
+```
+
+With vars, redefining the function updates the running flow without restart:
+
+```clojure
+;; Redefine the function
+(defn my-transform [input]
+  {:result {:processed (:raw input) :version 2}})
+
+;; Next call uses new version, no stop!/start! needed
+(aya/run sys :agent :main {:raw "data"})
+```
 
 ## Edge DSL
 
@@ -36,31 +62,18 @@ All function nodes have the same signature:
 
 ;; Conditional: map (route key -> target node)
 :edges {:score {:approve :approve-node
-                :reject :reject-node
-                :done :ayatori/done}}
+                :reject :reject-node}}
 
 ;; Node decides the route
-(defn score [input _]
+(defn score [input]
   {:result (if (> (:confidence input) 0.8)
              {:route :approve :data input}
              {:route :reject :data input})})
 ```
 
-`:ayatori/done` ends execution and returns `:data` as the final result.
+For LLM nodes, `:done` route is implicit: if not specified in edges, it routes to `:ayatori/done` (terminal). You can also use `:ayatori/done` explicitly as an edge target.
 
-## Lifecycle Hooks
-
-```clojure
-(aya/make-agent
-  {:nodes {:worker (fn [input state] {:result input})}
-   :edges {}
-   :caps {:main {:entry :worker}}
-   :lifecycle {:on-start (fn [ctx] {:n 0})
-               :on-stop (fn [ctx state] (println "cleanup"))}})
-```
-
-- `:on-start` `(fn [ctx] -> state)`: Runs on `start!` or `add-agents!`. Returns initial state.
-- `:on-stop` `(fn [ctx state] -> any)`: Runs on `stop!` or `remove-agent!`. Return value ignored.
+Note: The `:ayatori/*` namespace is reserved for framework use. User-defined nodes and deps cannot use this namespace.
 
 ## Fan-out
 
@@ -71,9 +84,9 @@ Parallel execution with branch collection:
   (aya/make-agent
     {:nodes {:analyze {:type :fan-out
                        :branches [:sentiment :toxicity]}
-             :sentiment (fn [_ _] {:result {:score 0.85}})
-             :toxicity (fn [_ _] {:result {:score 0.02}})
-             :aggregate (fn [input _]
+             :sentiment (fn [_] {:result {:score 0.85}})
+             :toxicity (fn [_] {:result {:score 0.02}})
+             :aggregate (fn [input]
                           {:result {:sentiment (get-in input [:results :sentiment])
                                     :toxicity (get-in input [:results :toxicity])}})}
      :edges {:analyze :aggregate}

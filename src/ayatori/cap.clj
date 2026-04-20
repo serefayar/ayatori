@@ -44,8 +44,8 @@
 
 (defn describe
   "Returns endpoint schema from a CapHandle. nil if no schema defined."
-  [^CapHandle ch]
-  (not-empty (select-keys (.metadata ch) [:input :output])))
+  [ch]
+  (not-empty (select-keys (cap-metadata ch) [:input :output])))
 
-(defmethod print-method CapHandle [^CapHandle ch ^java.io.Writer w]
-  (.write w (str "#cap<" (.uri ch) ">")))
+(defmethod print-method CapHandle [ch ^java.io.Writer w]
+  (.write w (str "#cap<" (cap-uri ch) ">")))

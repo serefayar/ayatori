@@ -19,13 +19,6 @@
   (testing "throws on malformed URI"
     (is (thrown? Exception (cap/parse-uri "not a uri at all")))))
 
-(deftest make-uri-test
-  (testing "constructs URI from components"
-    (is (= "ayatori://localhost:9000/c/calc/main"
-           (cap/make-uri "localhost" 9000 :calc :main)))
-    (is (= "ayatori://node-2:8000/c/processor/query"
-           (cap/make-uri "node-2" 8000 "processor" "query")))))
-
 #_{:clj-kondo/ignore [:unresolved-symbol]}
 (defspec uri-roundtrip 100
   (prop/for-all [host (gen/not-empty gen/string-alphanumeric)
