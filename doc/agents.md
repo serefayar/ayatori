@@ -7,13 +7,13 @@ Agents are directed graphs of nodes connected by edges. They expose **caps** (ca
 ```clojure
 (def doubler
   (aya/make-agent
-    {:nodes {:dbl (fn [input _] {:result {:doubled (* 2 (:n input))}})}
+    {:nodes {:dbl (fn [input] {:result {:doubled (* 2 (:n input))}})}}
      :edges {}
      :caps {:main {:entry :dbl}}}))
 
 (def caller
   (aya/make-agent
-    {:nodes {:prep (fn [input _] {:result {:n (:v input)}})}
+    {:nodes {:prep (fn [input] {:result {:n (:v input)}})}}
      :edges {:prep :compute}
      :deps [:compute]
      :caps {:main {:entry :prep}}}))
@@ -56,3 +56,31 @@ Change wiring at runtime:
 ```clojure
 (aya/rewire! sys :caller {:compute [:tripler :main]})
 ```
+
+## Topology Inspection
+
+Inspect agent topology before starting the system:
+
+```clojure
+(def agent (aya/make-agent {...}))
+
+(aya/describe-topology agent)
+;; => {:procs {:llm {:ins {:in ""}, :outs {:done "" :search ""}, :workload :io, ...}
+;;             :search {:ins {:in ""}, :outs {:out ""}}
+;;             ...}
+;;     :conns [[[:llm :done] [:ayatori.graph.executor/output-collector :result]]
+;;             [[:llm :search] [:search :in]]
+;;             ...]
+;;     :entry-key :llm
+;;     :deps #{:external}
+;;     :node-types {:llm #{:llm}, :pure #{:search}, :dep #{:external}, ...}}
+```
+
+The topology spec includes:
+- `:procs` Process specifications (ports, workload)
+- `:conns` Connection tuples between ports
+- `:entry-key` Entry point node
+- `:deps` Dependency set
+- `:node-types` Nodes grouped by type
+
+Useful for visualization, debugging, and static analysis.

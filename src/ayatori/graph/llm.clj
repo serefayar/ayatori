@@ -9,7 +9,8 @@
    [cheshire.core :as json]
    [clojure.core.async :as async]
    [malli.core :as m]
-   [malli.error :as me]))
+   [malli.error :as me]
+   [malli.transform :as mt]))
 
 (defn- make-provider
   "Creates provider record from client config map."
@@ -20,7 +21,9 @@
     :anthropic (anthropic/make-anthropic-provider config)
     (throw (ex-info "Unknown LLM provider" {:provider provider}))))
 
-(defn- init-state [config]
+(defn init-state
+  "Initializes LLM node state with memory and tracking fields."
+  [config]
   (let [memory (mem/make-memory (:memory config))]
     (when-let [p (:prompt config)]
       (async/<!! (mem/add-message memory {:role :system :content p})))
@@ -45,6 +48,56 @@
           response
           (p/parse-response provider params response))))))
 
+(defn- invoke-llm-stream
+  "Invokes LLM with streaming. Returns channel of events:
+   {:type :delta :delta \"text\"}
+   {:type :tool-call ...}
+   {:type :done :message {...}}
+   or Throwable on error."
+  [provider params]
+  (let [{:keys [url body headers]} (p/build-request provider (assoc params :stream true))
+        parse-fn (if (instance? ayatori.llm.provider.anthropic.AnthropicProvider provider)
+                   p/parse-anthropic-sse
+                   p/parse-openai-sse)
+        out-ch (async/chan 100)]
+    (async/go
+      (let [http-ch (http/async-post-stream url body headers parse-fn)]
+        (loop [accumulated "" tool-calls []]
+          (if-let [event (async/<! http-ch)]
+            (cond
+              (instance? Throwable event)
+              (async/>! out-ch event)
+
+              ;; Check finish-reason first (final chunk may have both delta and finish-reason)
+              (:finish-reason event)
+              (let [final-content (str accumulated (:delta event))]
+                (if (seq tool-calls)
+                  (do
+                    (doseq [tc tool-calls]
+                      (async/>! out-ch {:type :tool-call
+                                        :id (:id tc)
+                                        :name (get-in tc [:function :name])
+                                        :args (get-in tc [:function :arguments])}))
+                    (async/>! out-ch {:type :done
+                                      :message {:role :assistant
+                                                :tool-calls tool-calls}}))
+                  (async/>! out-ch {:type :done
+                                    :message {:role :assistant
+                                              :content final-content}})))
+
+              (seq (:delta event))
+              (do
+                (async/>! out-ch {:type :delta :delta (:delta event)})
+                (recur (str accumulated (:delta event)) tool-calls))
+
+              (:tool-calls event)
+              (recur accumulated (into tool-calls (:tool-calls event)))
+
+              :else
+              (recur accumulated tool-calls))
+            (async/close! out-ch)))))
+    out-ch))
+
 (defn- call-llm [config messages]
   (let [custom-invoke? (:invoke-fn config)
         invoke-fn (or custom-invoke? invoke-llm)
@@ -59,11 +112,23 @@
                  (assoc :response-format (:response-format config)))]
     (invoke-fn client-or-provider params)))
 
-(defn- next-tool-route [state]
+(defn coerce-tool-args
+  "Coerces tool arguments according to tool schema using Malli string transformer."
+  [tools tool-name args]
+  (if-let [tool (some #(when (= (:name %) tool-name) %) tools)]
+    (if-let [schema (:schema tool)]
+      (m/decode schema args (mt/string-transformer))
+      args)
+    args))
+
+(defn- next-tool-route [config state]
   (let [idx (count (:tool-results state))
-        tool-call (nth (:tool-calls state) idx)]
-    {:route (keyword (:name (:function tool-call)))
-     :data  (:arguments (:function tool-call))}))
+        tool-call (nth (:tool-calls state) idx)
+        tool-name (:name (:function tool-call))
+        raw-args (:arguments (:function tool-call))
+        args (coerce-tool-args (:tools config) tool-name raw-args)]
+    {:route (keyword tool-name)
+     :data args}))
 
 (defn- check-max-turns! [config state]
   (let [max-turns (or (:max-turns config) 50)]
@@ -114,7 +179,7 @@
 
 (defn- process-response
   "Async. Returns channel yielding {:result ... :state ...}."
-  [_config state response]
+  [config state response]
   (async/go
     (if (:tool-calls response)
       (let [state (async/<! (add-message state {:role :assistant :tool-calls (:tool-calls response)}))
@@ -122,7 +187,7 @@
                          :phase :collecting-tools
                          :tool-calls (:tool-calls response)
                          :tool-results [])]
-        {:result (next-tool-route state)
+        {:result (next-tool-route config state)
          :state state})
       (let [structured? (structured-response? response)
             state (if structured?
@@ -153,7 +218,7 @@
         state (update state :tool-results conj
                       {:tool-call-id (:id tool-call) :content content})]
     (if (< (count (:tool-results state)) (count (:tool-calls state)))
-      (async/go {:result (next-tool-route state)
+      (async/go {:result (next-tool-route config state)
                  :state state})
       (async/go
         (try
@@ -177,31 +242,39 @@
                 (async/<! (process-response config state response)))))
           (catch Exception e e))))))
 
-(defn- invoke-streaming [config input node-state]
-  (let [state (or node-state (init-state config))
-        content (if (string? input) input (pr-str input))
-        state (async/<!! (add-message state {:role :user :content content}))
-        state (update state :turn-count inc)
-        provider (when (:client config) (make-provider (:client config)))
-        {:keys [url body headers]} (p/build-stream-request provider (mem/get-messages (:memory state)) (:tools config))
-        raw-ch (http/async-post-stream url body headers)
-        out-ch (async/chan 32)]
-    (async/go-loop []
-      (if-let [chunk (async/<! raw-ch)]
-        (do
-          (when-not (instance? Throwable chunk)
-            (when-let [content (p/parse-stream-chunk provider chunk)]
-              (async/>! out-ch content)))
-          (recur))
-        (async/close! out-ch)))
-    {:result out-ch :state state :streaming true}))
-
 (defn invoke-llm-node
   "Invokes an LLM node. Manages conversation and tool routing. Returns a channel."
   [config input node-state]
-  (if (:stream config)
-    (async/go (invoke-streaming config input node-state))
-    (let [state (or node-state (init-state config))]
-      (case (:phase state)
-        :idle             (handle-idle config state input)
-        :collecting-tools (handle-collecting-tools config state input)))))
+  (let [state (or node-state (init-state config))]
+    (case (:phase state)
+      :idle             (handle-idle config state input)
+      :collecting-tools (handle-collecting-tools config state input))))
+
+(defn start-stream
+  "Starts LLM streaming. Returns channel of events.
+   Used by executor for streaming mode."
+  [config input state]
+  (let [provider (make-provider (:client config))
+        content (if (string? input) input (pr-str input))
+        _ (async/<!! (mem/add-message (:memory state) {:role :user :content content}))
+        messages (mem/get-messages (:memory state))
+        params (cond-> {:messages messages}
+                 (seq (:tools config)) (assoc :tools (:tools config))
+                 (:response-format config) (assoc :response-format (:response-format config)))]
+    (invoke-llm-stream provider params)))
+
+(defn continue-stream-after-tool
+  "Continues streaming after tool result. Returns [new-state new-stream-ch].
+   Adds tool result to memory and starts new stream."
+  [config state tool-call-id tool-result]
+  (let [provider (make-provider (:client config))
+        content (if (string? tool-result) tool-result (json/generate-string tool-result))
+        _ (async/<!! (mem/add-message (:memory state) {:role :tool
+                                                       :tool-call-id tool-call-id
+                                                       :content content}))
+        messages (mem/get-messages (:memory state))
+        params (cond-> {:messages messages}
+                 (seq (:tools config)) (assoc :tools (:tools config))
+                 (:response-format config) (assoc :response-format (:response-format config)))
+        stream-ch (invoke-llm-stream provider params)]
+    [(update state :turn-count (fnil inc 0)) stream-ch]))

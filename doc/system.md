@@ -1,21 +1,14 @@
 # System
 
-System groups named agents with shared middleware, wiring, and state store.
+System groups named agents with shared wiring.
 
 ## Setup
 
 ```clojure
 (def sys (-> (aya/make-system {:agents {:assistant assistant :reviewer reviewer}
-                               :middleware [(mw/make-tap)]
-                               :wiring {:reviewer {:llm [:assistant :chat]}}
-                               :store {:type :edn :path "/tmp/state.edn"}})
+                               :wiring {:reviewer {:llm [:assistant :chat]}}})
              aya/start!))
 ```
-
-## Store
-
-- Default: in-memory (`:atom`)
-- File-based: `{:type :edn :path "..."}`
 
 ## Runtime Management
 
@@ -49,7 +42,39 @@ System groups named agents with shared middleware, wiring, and state store.
 ;; => #{:old-doubler}
 ```
 
+## Topology Inspection
+
+```clojure
+;; Single agent topology
+(aya/describe-topology agent)
+
+;; System-wide topology (all agents + wiring)
+(aya/describe-system-topology sys)
+;; => {:agents {:assistant {...} :reviewer {...}}
+;;     :wiring {:reviewer {:llm [:assistant :chat]}}
+;;     :edges [{:from [:reviewer :llm] :to [:assistant :chat]}]
+;;     :orphans #{:assistant}}
+```
+
 ## Lifecycle
 
-- `start!` builds cap-map, resolver, runs `:on-start` hooks
-- `stop!` runs `:on-stop` hooks, clears state
+- `start!` builds cap-map, resolver, starts agent flows
+- `stop!` stops agent flows, clears state
+
+### Pause and Resume
+
+```clojure
+;; Pause an agent (messages queue but don't process)
+(aya/pause-agent! sys :assistant)
+
+;; Resume processing
+(aya/resume-agent! sys :assistant)
+
+;; Health check
+(async/<!! (aya/ping-agent sys :assistant))
+```
+
+Use cases:
+- Hot reload / maintenance
+- Rate limiting
+- Liveness probes

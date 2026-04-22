@@ -47,6 +47,7 @@ Threading-friendly functions to configure nodes:
     (h/with-memory (h/sliding-memory 50))
     (h/with-tools [tool1 tool2])
     (h/with-max-turns 30)
+    (h/with-streaming)
     (h/with-response-format [:map [:answer :string]]))
 ```
 
@@ -94,7 +95,7 @@ Threading-friendly functions to configure nodes:
       (h/llm-node "You are an order assistant.")
       (h/with-memory (h/sliding-memory 50))
       (h/with-tools [lookup-tool])
-      (h/agent {:lookup (fn [{:keys [id]} _]
+      (h/agent {:lookup (fn [{:keys [id]}]
                           {:result (str "Order " id ": shipped")})})
       (h/system)
       (h/start!)))
