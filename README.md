@@ -68,15 +68,18 @@ graph TD
     User([User]) --> Order[order-agent<br/>LLM + tools]
     Order -->|check_availability| Inventory[inventory-agent<br/>check-stock]
     Order -->|estimate_delivery| Shipping[shipping-agent<br/>estimate]
+    Shipping -->|hill-valley| Express[express]
+    Shipping -->|default| Standard[standard]
     Inventory -.->|stock info| Order
-    Shipping -.->|delivery estimate| Order
+    Express -.->|delivery estimate| Order
+    Standard -.->|delivery estimate| Order
 ```
 
 ```clojure
 (require '[ayatori.core :as aya]
          '[clojure.core.async :as async])
     
-;; Service agents (pure functions)
+;; Service agents (pure functions with schema)
 (def inventory-agent
   (aya/make-agent
     {:nodes {:check-stock
@@ -86,16 +89,29 @@ graph TD
                            :in-stock (pos? (get stock product-id 0))
                            :quantity (get stock product-id 0)}}))}
      :edges {}
-     :caps {:check-stock {:entry :check-stock}}}))
+     :caps {:check-stock {:entry :check-stock
+                          :input [:map [:product-id :keyword]]
+                          :output [:map
+                                   [:product-id :keyword]
+                                   [:in-stock :boolean]
+                                   [:quantity :int]]}}}))
 
 (def shipping-agent
   (aya/make-agent
-    {:nodes {:estimate-delivery
-             (fn [{:keys [product-id destination]}]
-               (let [days (case destination :hill-valley 1 :domestic 3 :international 7 5)]
-                 {:result {:product-id product-id :estimated-days days}}))}
-     :edges {}
-     :caps {:estimate {:entry :estimate-delivery}}}))
+    {:nodes {:estimate
+             {:fn (fn [{:keys [product-id destination]}]
+                    (let [days (case destination "Hill Valley" 1 "Domestic" 3 "International" 7 5)]
+                      {:result {:product-id product-id
+                                :destination destination
+                                :estimated-days days}}))
+              :input [:map
+                      [:product-id :keyword]
+                      [:destination :string]]}
+             :express (fn [input] {:result (assoc input :service :express :fee 25.00)})
+             :standard (fn [input] {:result (assoc input :service :standard :fee 5.00)})}
+     :edges {:estimate [[:express #(= "Hill Valley" (:destination %))]
+                        [:standard]]}
+     :caps {:estimate {:entry :estimate}}}))
 
 ;; LLM agent with tools that call service agents via deps
 (def order-agent
@@ -104,7 +120,9 @@ graph TD
                    :client {:provider :ollama
                             :model "gpt-oss:20b"
                             :base-url "http://localhost:11434"}
-                   :prompt "You are an e-commerce assistant at Doc Brown's shop. Help customers check product availability and delivery times. Available products: hoverboard, flux-capacitor, mr-fusion."
+                   :prompt "You are an e-commerce assistant at Doc Brown's shop. 
+                            Help customers check product availability and delivery times. 
+                            Available products: hoverboard, flux-capacitor, mr-fusion."
                    :tools [{:name "check_availability"
                             :description "Check if a product is in stock"
                             :schema [:map [:product-id :keyword]]}
@@ -112,10 +130,10 @@ graph TD
                             :description "Get delivery estimate for a product"
                             :schema [:map 
                                      [:product-id :keyword] 
-                                     [:destination [:enum :hill-valley :domestic :international]]]}]
+                                     [:destination [:enum "Hill Valley" "Domestic" "International"]]]}]
                    :memory {:strategies [{:type :sliding-window :max-messages 20}]}}}
-     :edges {:llm {:check_availability :check-stock
-                   :estimate_delivery :estimate-delivery}}
+     :edges {:llm [[:check_availability :check-stock]
+                   [:estimate_delivery :estimate-delivery]]}
      :deps [:check-stock :estimate-delivery]
      :caps {:chat {:entry :llm}}}))
 
@@ -130,10 +148,10 @@ graph TD
       aya/start!))
 
 (async/<!! (aya/run sys :order :chat {:content "Is the flux-capacitor in stock? How long for Hill Valley delivery?"}))
-;; => {:content "Great news!  \n- **Flux‑capacitor**: In stock (3 units available).  \n- 
-;;              **Delivery to Hill Valley**: Estimated delivery time is **5 days**.\n\n 
-;;               If you’d like to place an order or need anything else, just let me know!"}
-
+;; => {:content "Great news! The **flux‑capacitor** is in stock and ready to ship.
+;;               **Availability** - In stock ✔️ Quantity available: 3
+;;               **Delivery to Hill Valley** Estimated delivery time: 1 business day (express) 
+;;               **Shipping fee:** $25.00 ..."
 ;; Lifecycle control
 (aya/pause-agent! sys :order)
 (aya/resume-agent! sys :order)

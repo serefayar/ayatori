@@ -16,17 +16,19 @@
 ;; Var/fn helpers
 
 (defn- fn-or-var?
-  "Returns true if x is a function or a var pointing to a function."
+  "Returns true if x is a function, var, or map with :fn key."
   [x]
   (or (fn? x)
-      (and (var? x) (fn? @x))))
+      (and (var? x) (fn? @x))
+      (and (map? x) (contains? x :fn) (not (contains? x :type)))))
 
 (defn- ->fn
   "Returns a function that derefs var at call time, or the fn itself."
-  [node-fn]
-  (if (var? node-fn)
-    (fn [data] (@node-fn data))
-    node-fn))
+  [node]
+  (let [f (if (and (map? node) (contains? node :fn)) (:fn node) node)]
+    (if (var? f)
+      (fn [data] (@f data))
+      f)))
 
 ;; Port map helpers
 
@@ -39,6 +41,59 @@
   "Creates result port map for fan-out branches. {:result-a \"\" :result-b \"\"}."
   [branches]
   (->port-map (map #(keyword (str "result-" (name %))) branches)))
+
+;; Edge helpers
+
+(defn- route-target
+  "Extracts target from a route (keyword or vector)."
+  [route]
+  (if (keyword? route)
+    route
+    (case (count route)
+      1 (first route)   ;; [:target]
+      2 (if (fn? (second route))
+          (first route)   ;; [:target pred]
+          (second route)) ;; [:label :target]
+      (first route))))    ;; fallback
+
+(defn- normalize-edge
+  "Normalizes edge to vector of routes."
+  [edge]
+  (cond
+    ;; :target → [[:default :target]]
+    (keyword? edge)
+    [[:default edge]]
+
+    ;; vector of routes (may contain bare keywords)
+    (and (vector? edge) (seq edge))
+    (mapv (fn [r] (if (keyword? r) [:default r] r)) edge)
+
+    :else
+    (throw (ex-info "Invalid edge format" {:edge edge}))))
+
+(defn- parse-route
+  "Parses a route. Returns {:label :pred :target}."
+  [route]
+  (case (count route)
+    1 (let [[target] route]
+        {:label target :pred (constantly true) :target target})
+    2 (if (fn? (second route))
+        (let [[target pred] route]
+          {:label target :pred pred :target target})
+        (let [[label target] route]
+          {:label label :pred (constantly true) :target target}))
+    (throw (ex-info "Invalid route format" {:route route}))))
+
+(defn- edge-targets
+  "Extracts target nodes from routes."
+  [edge]
+  (mapv route-target (normalize-edge edge)))
+
+(defn- has-conditional-routes?
+  "Returns true if edge has routes with predicates."
+  [edge]
+  (and (vector? edge)
+       (some #(and (vector? %) (= 2 (count %)) (fn? (second %))) edge)))
 
 ;; Step function builders
 
@@ -66,11 +121,12 @@
                           fan-out-id (assoc :fan-out-id fan-out-id))]}]))})))
 
 (defn- router-node->step
-  "Wraps a router node (conditional edges) as a Flow step.
-   Supports vars for REPL reloadability."
-  [node-key node-fn edge-map]
+  "Wraps a router node as a Flow step using dispatch predicates.
+   Evaluates predicates in order, first match wins."
+  [node-key node-fn edge]
   (let [f (->fn node-fn)
-        out-ports (->port-map (keys edge-map))]
+        routes (mapv parse-route (normalize-edge edge))
+        out-ports (->port-map (mapv :target routes))]
     (fn step
       ([] {:ins {:in "node input"} :outs out-ports})
       ([_params] {})
@@ -78,33 +134,36 @@
       ([state in-id msg]
        (case in-id
          :in (let [{:keys [data corr-id]} msg
-                   raw-result (try
-                                (f data)
-                                (catch Throwable e
-                                  (throw (ex-info "Node execution failed"
-                                                  {:corr-id corr-id :node node-key} e))))
-                   result (if (and (map? raw-result) (contains? raw-result :result))
-                            (:result raw-result)
-                            raw-result)
-                   route-key (:route result)
-                   output-data (or (:data result) result)]
-               (when-not route-key
-                 (throw (ex-info "Missing :route" {:corr-id corr-id :node node-key})))
-               (when-not (contains? out-ports route-key)
-                 (throw (ex-info "Unknown route"
+                   result (try
+                            (f data)
+                            (catch Throwable e
+                              (throw (ex-info "Node execution failed"
+                                              {:corr-id corr-id :node node-key} e))))
+                   output-data (cond
+                                 (nil? result) data
+                                 (not (map? result)) result
+                                 (contains? result :result) (:result result)
+                                 :else result)
+                   match (first (filter #((:pred %) output-data) routes))]
+               (when-not match
+                 (throw (ex-info "No matching dispatch route"
                                  {:corr-id corr-id :node node-key
-                                  :route route-key :valid (keys out-ports)})))
-               [state {route-key [{:data output-data :corr-id corr-id}]}]))))))
+                                  :routes (mapv :label routes)})))
+               [state {(:target match) [{:data output-data
+                                         :corr-id corr-id
+                                         :route (:label match)}]}]))))))
 
 (defn- llm-node->step
   "Wraps an LLM node as a Flow step. Handles async invocation and routing.
    Uses flow step state to persist LLM conversation state across invocations.
-   Routes not in edge-map go to ::terminal (implicit sink).
+   Routes not in edge go to ::terminal (implicit sink).
    Streaming uses self-message pattern: each token is a separate invocation."
-  [node-key config edge-map]
-  (let [valid-routes (conj (set (keys edge-map)) :done)
+  [node-key config edge]
+  (let [routes (if edge (mapv parse-route (normalize-edge edge)) [])
+        route-map (into {} (map (juxt :label :target)) routes)
+        valid-routes (conj (set (keys route-map)) :done)
         streaming? (:stream config)
-        out-ports (cond-> (assoc (->port-map (keys edge-map))
+        out-ports (cond-> (assoc (->port-map (vals route-map))
                                  ::terminal "final result")
                     streaming? (assoc ::self-out "stream loop"
                                       ::token-out "stream token"
@@ -152,7 +211,8 @@
                  (throw (ex-info "Unknown route"
                                  {:corr-id corr-id :node node-key
                                   :route route-key :valid valid-routes})))
-               (let [out-port (if (contains? edge-map route-key) route-key ::terminal)]
+               (let [target (get route-map route-key)
+                     out-port (if target target ::terminal)]
                  [new-state {out-port [{:data output-data :corr-id corr-id}]}]))))
 
          ::self-in
@@ -188,13 +248,13 @@
 
              (= :tool-call (:type event))
              (let [tool-name (keyword (:name event))
-                   out-port (get edge-map tool-name)
+                   target (get route-map tool-name)
                    coerced-args (llm/coerce-tool-args (:tools config) (:name event) (:args event))]
-               (when-not out-port
+               (when-not target
                  (throw (ex-info "Unknown tool route"
                                  {:corr-id corr-id :node node-key :tool (:name event)})))
                [(assoc state :pending-tool-call (:id event))
-                {out-port [{:data coerced-args :corr-id corr-id}]}])
+                {target [{:data coerced-args :corr-id corr-id}]}])
 
              :else
              ;; Unknown event type, continue
@@ -316,25 +376,26 @@
 
 (defn- classify-node
   "Returns the type of a node: :llm, :fan-out, :router, or :pure."
-  [node edges]
+  [node edge]
   (cond
     (llm-node? node) :llm
     (fan-out-node? node) :fan-out
-    (map? edges) :router
+    (and edge (has-conditional-routes? edge)) :router
     :else :pure))
 
 (defn- build-proc-spec
   "Builds a proc spec (ports and metadata) for a single node.
    Returns [type spec] tuple."
-  [node edges]
-  (let [node-type (classify-node node edges)]
+  [node edge]
+  (let [node-type (classify-node node edge)]
     [node-type
      (case node-type
        :llm
-       (let [streaming? (:stream node)]
+       (let [streaming? (:stream node)
+             targets (if edge (edge-targets edge) [])]
          {:ins (cond-> {:in "node input"}
                  streaming? (assoc ::self-in "stream loop"))
-          :outs (cond-> (assoc (->port-map (keys edges))
+          :outs (cond-> (assoc (->port-map targets)
                                ::terminal "final result")
                   streaming? (assoc ::self-out "stream loop"
                                     ::token-out "stream token"
@@ -349,7 +410,7 @@
 
        :router
        {:ins {:in "node input"}
-        :outs (->port-map (keys edges))}
+        :outs (->port-map (edge-targets edge))}
 
        :pure
        {:ins {:in "node input"}
@@ -364,9 +425,19 @@
                                               (when (and (llm-node? v) (:stream v)) k)))
                                   nodes)
         llm-dep-targets (reduce-kv
-                         (fn [acc from to]
-                           (if (and (llm-node? (get nodes from)) (map? to))
-                             (reduce-kv (fn [m _ target] (assoc m target from)) acc to)
+                         (fn [acc from edge]
+                           (if (and (llm-node? (get nodes from)) edge)
+                             (let [routes (normalize-edge edge)
+                                   route-map (into {} (map (fn [r] [(if (= 1 (count r))
+                                                                       :default
+                                                                       (first r))
+                                                                     (route-target r)]))
+                                                   routes)]
+                               (reduce-kv (fn [m label target]
+                                            (if (= :done label)
+                                              m
+                                              (assoc m target from)))
+                                          acc route-map))
                              acc))
                          {}
                          edges)]
@@ -377,20 +448,27 @@
      :llm-dep-targets llm-dep-targets}))
 
 (defn- build-edge-connections
-  "Builds connections from edges (regular and conditional)."
-  [edges branch-nodes]
+  "Builds connections from edges. All edges use unified vector format."
+  [edges branch-nodes nodes]
   (reduce-kv
-   (fn [acc from to]
-     (cond
-       (contains? branch-nodes from) acc
-       (keyword? to) (conj acc [[from :out] [to :in]])
-       (map? to) (reduce-kv
-                  (fn [cacc route-key target]
-                    (if (= :ayatori/done target)
-                      (conj cacc [[from route-key] [::output-collector :result]])
-                      (conj cacc [[from route-key] [target :in]])))
-                  acc to)
-       :else acc))
+   (fn [acc from edge]
+     (if (contains? branch-nodes from)
+       acc
+       (let [routes (normalize-edge edge)
+             node (get nodes from)
+             is-llm? (llm-node? node)
+             has-predicates? (has-conditional-routes? edge)]
+         (reduce (fn [cacc route]
+                   (let [target (route-target route)
+                         out-port (cond
+                                    is-llm? target
+                                    has-predicates? target
+                                    :else :out)]
+                     (if (= :ayatori/done target)
+                       (conj cacc [[from target] [::output-collector :result]])
+                       (conj cacc [[from out-port] [target :in]]))))
+                 acc
+                 routes))))
    []
    edges))
 
@@ -419,8 +497,8 @@
 
 (defn- build-connections
   "Builds connection tuples from edges and fan-out configs."
-  [edges {:keys [fan-out-nodes branch-nodes streaming-llm-nodes]}]
-  (-> (build-edge-connections edges branch-nodes)
+  [nodes edges {:keys [fan-out-nodes branch-nodes streaming-llm-nodes]}]
+  (-> (build-edge-connections edges branch-nodes nodes)
       (into (build-fan-out-connections fan-out-nodes))
       (into (build-streaming-connections streaming-llm-nodes))))
 
@@ -500,7 +578,7 @@
         node-types (update node-types :collector (fnil conj #{}) ::output-collector)
 
         terminal-nodes (find-terminal-nodes nodes proc-specs edges deps branch-nodes)
-        conns (-> (build-connections edges analysis)
+        conns (-> (build-connections nodes edges analysis)
                   (into (build-terminal-connections terminal-nodes nodes fan-out-nodes))
                   (into (build-dep-connections deps llm-dep-targets))
                   (into (build-llm-terminal-connections nodes)))]
@@ -519,7 +597,7 @@
   [agent dep-resolvers result-registry]
   (let [{:keys [nodes edges topology]} agent
         deps (:deps topology)
-        router-nodes (into #{} (keep (fn [[k v]] (when (map? v) k))) edges)
+        router-nodes (into #{} (keep (fn [[k v]] (when (has-conditional-routes? v) k))) edges)
         fan-out-nodes (into {} (filter (comp fan-out-node? val)) nodes)
         llm-nodes (into {} (filter (comp llm-node? val)) nodes)
 

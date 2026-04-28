@@ -76,10 +76,16 @@ Helper functions read API keys from environment variables:
                    :prompt "You are a helpful assistant."
                    :tools [search-tool]}
              :search (fn [input] {:result ((:handler search-tool) input)})}
-     :edges {:llm {:search :search}  ;; :done implicit
-             :search :llm}
+     :edges {:llm [[:search :search]    ;; tool "search" routes to :search node
+                   [:done :ayatori/done]]  ;; non-tool response terminates
+             :search :llm}           ;; tool result goes back to LLM
      :caps {:chat {:entry :llm}}}))
 ```
+
+LLM nodes use `[:label :target]` format for tool routing:
+- Label = tool name for routing tool calls
+- `:done` label handles responses without tool calls
+- `:ayatori/done` terminates the flow and returns the result
 
 Tool calls route through graph nodes, so middleware observes every step.
 

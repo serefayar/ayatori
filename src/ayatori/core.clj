@@ -9,8 +9,19 @@
 
 ;; Graph Specs
 
+(def Route
+  "A route: keyword (bare default), [:target], [:target pred], or [:label :target]."
+  [:or
+   :keyword                             ;; :target (bare default in vector)
+   [:tuple :keyword]                    ;; [:target] - default
+   [:tuple :keyword :keyword]           ;; [:label :target] - LLM tool routing
+   [:tuple :keyword fn?]])              ;; [:target pred] - conditional
+
 (def Edge
-  [:or :keyword [:map-of :keyword :keyword]])
+  "Keyword for unconditional, or vector of routes for conditional/LLM."
+  [:or
+   :keyword                             ;; :target (unconditional)
+   [:vector Route]])
 
 (def ToolSpec
   [:map
@@ -61,10 +72,21 @@
    [:strategy {:optional true} [:enum :collect-all :fail-fast]]
    [:collector {:optional true} :keyword]])
 
+(def FnOrVar
+  [:fn {:error/message "should be a fn or var"}
+   (fn [x] (or (fn? x) (and (var? x) (fn? @x))))])
+
+(def FunctionNodeConfig
+  "Function node with optional schema."
+  [:map
+   [:fn FnOrVar]
+   [:input {:optional true} :any]
+   [:output {:optional true} :any]])
+
 (def NodeSpec
   [:or
-   [:fn {:error/message "should be a fn or var"}
-    (fn [x] (or (fn? x) (and (var? x) (fn? @x))))]
+   FnOrVar
+   FunctionNodeConfig
    [:multi {:dispatch :type}
     [:llm LLMNode]
     [:fan-out FanOutNode]]])
@@ -83,13 +105,59 @@
    [:deps [:set :keyword]]
    [:node-types {:optional true} [:map-of :keyword [:set :keyword]]]])
 
+(defn- function-node?
+  "Returns true if node is a function node (fn, var, or map with :fn)."
+  [node]
+  (or (fn? node)
+      (and (var? node) (fn? @node))
+      (and (map? node) (contains? node :fn) (not (contains? node :type)))))
+
+(defn- node-schema
+  "Extracts schema from node. Returns {:input ... :output ...} or nil."
+  [node]
+  (when (and (map? node) (not (contains? node :type)))
+    (let [schemas (select-keys node [:input :output])]
+      (when (seq schemas) schemas))))
+
+(defn- resolve-cap-schema
+  "Resolves cap schema: cap override > node schema."
+  [cap nodes]
+  (let [entry-node (get nodes (:entry cap))
+        ns (node-schema entry-node)]
+    {:input (or (:input cap) (:input ns))
+     :output (or (:output cap) (:output ns))}))
+
+(defn- route-target
+  "Extracts target from a route (keyword or vector)."
+  [route]
+  (if (keyword? route)
+    route
+    (case (count route)
+      1 (first route)   ;; [:target]
+      2 (if (fn? (second route))
+          (first route)   ;; [:target pred]
+          (second route)) ;; [:label :target]
+      (first route))))    ;; fallback
+
+(defn- normalize-edge
+  "Normalizes edge to vector of routes."
+  [edge]
+  (cond
+    ;; :target → [[:default :target]]
+    (keyword? edge)
+    [[:default edge]]
+
+    ;; vector of routes (may contain bare keywords)
+    (and (vector? edge) (seq edge))
+    (mapv (fn [r] (if (keyword? r) [:default r] r)) edge)
+
+    :else
+    (throw (ex-info "Invalid edge format" {:edge edge}))))
+
 (defn- collect-edge-targets [edges]
   (into #{}
-        (mapcat (fn [[_ target]]
-                  (cond
-                    (keyword? target) [target]
-                    (map? target) (vals target)
-                    :else [])))
+        (mapcat (fn [[_ edge]]
+                  (map route-target (normalize-edge edge))))
         edges))
 
 (defn- caps-entry-in-nodes? [{:keys [nodes caps]}]
@@ -125,6 +193,76 @@
                                      (collect-edge-targets edges)
                                      (collect-fan-out-branches nodes)))]
     (every? #(contains? referenced %) node-set)))
+
+(defn- node-output-schema
+  "Gets output schema from node (function node or LLM response-format)."
+  [node]
+  (cond
+    (and (map? node) (not (contains? node :type)))
+    (:output node)
+
+    (and (map? node) (= :llm (:type node)))
+    (get-in node [:response-format :schema])
+
+    :else nil))
+
+(defn- node-input-schema
+  "Gets input schema from node."
+  [node]
+  (when (and (map? node) (not (contains? node :type)))
+    (:input node)))
+
+(defn- extract-map-keys
+  "Extracts required keys from a Malli map schema."
+  [schema]
+  (when (and (vector? schema) (= :map (first schema)))
+    (into #{}
+          (keep (fn [entry]
+                  (when (vector? entry)
+                    (let [k (first entry)]
+                      (when (keyword? k) k)))))
+          (rest schema))))
+
+(defn- schema-compatible?
+  "Checks if output schema is compatible with input schema.
+   Compatible means output provides all keys that input requires."
+  [output-schema input-schema]
+  (cond
+    (nil? input-schema) true
+    (nil? output-schema) true
+    :else
+    (let [output-keys (extract-map-keys output-schema)
+          input-keys (extract-map-keys input-schema)]
+      (if (and output-keys input-keys)
+        (set/subset? input-keys output-keys)
+        true))))
+
+(defn- collect-edge-schema-errors
+  "Collects schema incompatibilities across edges."
+  [nodes edges]
+  (reduce-kv
+   (fn [errors source-key edge]
+     (let [source-node (get nodes source-key)
+           source-output (node-output-schema source-node)
+           targets (map route-target (normalize-edge edge))]
+       (reduce
+        (fn [errs target-key]
+          (if (or (= :ayatori/done target-key)
+                  (not (contains? nodes target-key)))
+            errs
+            (let [target-node (get nodes target-key)
+                  target-input (node-input-schema target-node)]
+              (if (and source-output target-input
+                       (not (schema-compatible? source-output target-input)))
+                (conj errs {:from source-key
+                            :to target-key
+                            :output-schema source-output
+                            :input-schema target-input})
+                errs))))
+        errors
+        targets)))
+   []
+   edges))
 
 (def GraphSpec
   [:and
@@ -217,6 +355,19 @@
 
 (defonce ^:private active-system (atom nil))
 
+(defn- find-unreachable-nodes
+  "Finds nodes that are not reachable from any entry point."
+  [nodes edges caps deps]
+  (let [entry-nodes (set (map :entry (vals caps)))
+        edge-targets (collect-edge-targets edges)
+        edge-sources (set (keys edges))
+        dep-set (set deps)
+        branch-nodes (into #{} (mapcat :branches)
+                           (filter #(= :fan-out (:type %)) (vals nodes)))
+        reachable (into entry-nodes (concat edge-targets edge-sources dep-set branch-nodes))
+        all-nodes (set (keys nodes))]
+    (clojure.set/difference all-nodes reachable)))
+
 (defn make-agent
   "Creates an agent from a spec. Validates and builds topology for inspection."
   {:malli/schema [:=> [:cat GraphSpec] BoundGraph]}
@@ -229,8 +380,16 @@
                :caps (:caps spec)
                :deps (or (:deps spec) [])
                :max-steps (or (:max-steps spec) 100)}
-        topology (executor/build-topology-spec agent)]
-    (assoc agent :topology topology)))
+        unreachable (find-unreachable-nodes (:nodes agent) (:edges agent)
+                                            (:caps agent) (:deps agent))
+        schema-errors (collect-edge-schema-errors (:nodes agent) (:edges agent))]
+    (when (seq unreachable)
+      (println (str "[WARN] Unreachable nodes: " (pr-str unreachable))))
+    (when (seq schema-errors)
+      (throw (ex-info "Edge schema incompatibility"
+                      {:errors schema-errors})))
+    (let [topology (executor/build-topology-spec agent)]
+      (assoc agent :topology topology))))
 
 (defn- wrap-agent [agent-key agent]
   {:graph (assoc agent :name agent-key)})
@@ -256,20 +415,21 @@
                     {:errors   (me/humanize (m/explain schema data))
                      direction data}))))
 
-(defn- caps->handles [agent-key caps sys-host sys-port]
+(defn- caps->handles [agent-key caps nodes sys-host sys-port]
   (into {}
         (map (fn [[cap-key cap-config]]
-               (let [uri (cap/make-uri sys-host sys-port agent-key cap-key)]
+               (let [uri (cap/make-uri sys-host sys-port agent-key cap-key)
+                     resolved (resolve-cap-schema cap-config nodes)]
                  [cap-key (cap/make-cap-handle uri {:agent agent-key
                                                     :cap cap-key
-                                                    :input (:input cap-config)
-                                                    :output (:output cap-config)})])))
+                                                    :input (:input resolved)
+                                                    :output (:output resolved)})])))
         caps))
 
 (defn- build-cap-map [agents-map sys-host sys-port]
   (into {}
         (map (fn [[agent-key {:keys [graph]}]]
-               [agent-key (caps->handles agent-key (:caps graph) sys-host sys-port)]))
+               [agent-key (caps->handles agent-key (:caps graph) (:nodes graph) sys-host sys-port)]))
         agents-map))
 
 (defn- local-uri? [uri-host uri-port sys-host sys-port]
@@ -283,8 +443,9 @@
       (throw (ex-info "Agent not found" {:agent agent})))
     (when-not cap-config
       (throw (ex-info "Cap not found" {:agent agent :cap cap})))
-    (when (:input cap-config)
-      (validate-schema! (:input cap-config) input :input))
+    (let [resolved (resolve-cap-schema cap-config (:nodes graph))]
+      (when (:input resolved)
+        (validate-schema! (:input resolved) input :input)))
     (execute-graph flow input
                    {:agent agent
                     :entry (:entry cap-config)})))
@@ -555,9 +716,10 @@
     (throw (ex-info "System not started" {:status (:status @(:state sys))})))
   (let [{:keys [graph flow cap]} (lookup-cap sys agent-key cap-key)
         entry-node (get-in graph [:nodes (:entry cap)])
-        streaming? (and (map? entry-node) (:stream entry-node))]
-    (when (:input cap)
-      (validate-schema! (:input cap) input :input))
+        streaming? (and (map? entry-node) (:stream entry-node))
+        resolved (resolve-cap-schema cap (:nodes graph))]
+    (when (:input resolved)
+      (validate-schema! (:input resolved) input :input))
     (if streaming?
       (execute-graph flow input
                      {:agent agent-key
@@ -566,4 +728,4 @@
       (-> (execute-graph flow input
                          {:agent agent-key
                           :entry (:entry cap)})
-          (wrap-output-validation (:output cap))))))
+          (wrap-output-validation (:output resolved))))))
