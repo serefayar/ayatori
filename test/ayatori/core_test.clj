@@ -38,16 +38,18 @@
 
 (deftest conditional-branch-test
   (let [g (aya/make-agent {:nodes {:score   (fn [input]
-                                              {:result (if (> (:confidence input) 0.8)
-                                                         {:route :approve :data {:decision :approved}}
-                                                         {:route :reject :data {:decision :rejected}})})
+                                              {:result {:confidence (:confidence input)
+                                                        :decision (if (> (:confidence input) 0.8)
+                                                                    :approved
+                                                                    :rejected)}})
                                    :approve (fn [input] {:result {:result :approved :input input}})
                                    :reject  (fn [input] {:result {:result :rejected :input input}})}
-                           :edges {:score {:approve :approve :reject :reject}}
+                           :edges {:score [[:approve #(> (:confidence %) 0.8)]
+                                           [:reject]]}
                            :caps  {:main {:entry :score}}})]
-    (is (= {:result :approved :input {:decision :approved}}
+    (is (= {:result :approved :input {:confidence 0.9 :decision :approved}}
            (run-agent! g {:confidence 0.9})))
-    (is (= {:result :rejected :input {:decision :rejected}}
+    (is (= {:result :rejected :input {:confidence 0.5 :decision :rejected}}
            (run-agent! g {:confidence 0.5})))))
 
 (deftest error-propagation-test
@@ -68,7 +70,7 @@
   (let [invoke-fn (mock-invoke [{:role :assistant :content "Hello!"}])
         g (aya/make-agent {:nodes {:llm    {:type :llm :invoke-fn invoke-fn :prompt "You are helpful"}
                                    :output (fn [input] {:result {:answer (:content input)}})}
-                           :edges {:llm {:done :output}}
+                           :edges {:llm [[:done :output]]}
                            :caps  {:main {:entry :llm}}})]
     (is (= {:answer "Hello!"} (run-agent! g {:content "Hi"})))))
 
@@ -81,7 +83,7 @@
         g (aya/make-agent {:nodes {:llm    {:type :llm :invoke-fn invoke-fn}
                                    :search (fn [input] {:result (str "results for " (:query input))})
                                    :output (fn [input] {:result {:answer (:content input)}})}
-                           :edges {:llm {:done :output :search :search} :search :llm}
+                           :edges {:llm [[:search :search] [:done :output]] :search :llm}
                            :caps  {:main {:entry :llm}}})]
     (is (= {:answer "Found results"} (run-agent! g {:content "search clojure"})))))
 
@@ -140,7 +142,7 @@
                                               :invoke-fn (fn [_ _] (async/promise-chan))
                                               :prompt "test"}
                                      :search (fn [_] {:result "found"})}
-                             :edges {:llm {:search :search}
+                             :edges {:llm [[:search :search]]
                                      :search :llm}
                              :deps  [:external]
                              :caps  {:main {:entry :llm}}})
@@ -155,6 +157,82 @@
       (is (contains? (get-in topology [:node-types :pure]) :search))
       (is (contains? (get-in topology [:node-types :dep]) :external))
       (is (seq (:conns topology))))))
+
+(deftest dispatch-predicate-multi-route-test
+  (testing "dispatch predicates with multiple routes"
+    (let [g (aya/make-agent {:nodes {:classify (fn [input]
+                                                 {:result {:score (:value input)}})
+                                     :high     (fn [input] {:result {:tier :premium :score (:score input)}})
+                                     :medium   (fn [input] {:result {:tier :standard :score (:score input)}})
+                                     :low      (fn [input] {:result {:tier :basic :score (:score input)}})}
+                             :edges {:classify [[:high   #(> (:score %) 90)]
+                                                [:medium #(> (:score %) 50)]
+                                                [:low]]}
+                             :caps  {:main {:entry :classify}}})]
+      (is (= {:tier :premium :score 95} (run-agent! g {:value 95})))
+      (is (= {:tier :standard :score 70} (run-agent! g {:value 70})))
+      (is (= {:tier :basic :score 30} (run-agent! g {:value 30}))))))
+
+(deftest dispatch-predicate-no-match-test
+  (testing "throws when no dispatch route matches"
+    (let [g (aya/make-agent {:nodes {:check (fn [_] {:result {:status :unknown}})
+                                     :ok    (fn [_] {:result :ok})
+                                     :err   (fn [_] {:result :error})}
+                             :edges {:check [[:ok  #(= :ok (:status %))]
+                                             [:err #(= :error (:status %))]]}
+                             :caps  {:main {:entry :check}}})]
+      (is (thrown-with-msg? Exception #"No matching dispatch route"
+                            (run-agent! g {}))))))
+
+(deftest node-schema-test
+  (testing "node with schema, cap inherits"
+    (let [g (aya/make-agent {:nodes {:process {:fn (fn [input] {:result {:doubled (* 2 (:n input))}})
+                                               :input [:map [:n :int]]
+                                               :output [:map [:doubled :int]]}}
+                             :edges {}
+                             :caps {:main {:entry :process}}})]
+      (is (= {:doubled 10} (run-agent! g {:n 5})))))
+
+  (testing "cap overrides node schema"
+    (let [g (aya/make-agent {:nodes {:process {:fn (fn [input] {:result {:value (:x input)}})
+                                               :input [:map [:n :int]]
+                                               :output [:map [:value :int]]}}
+                             :edges {}
+                             :caps {:main {:entry :process
+                                           :input [:map [:x :int]]}}})]
+      (is (= {:value 42} (run-agent! g {:x 42})))))
+
+  (testing "backward compat with plain function nodes"
+    (let [g (aya/make-agent {:nodes {:echo (fn [input] {:result input})}
+                             :edges {}
+                             :caps {:main {:entry :echo}}})]
+      (is (= {:msg "hi"} (run-agent! g {:msg "hi"})))))
+
+  (testing "schema validation fails on invalid input"
+    (let [g (aya/make-agent {:nodes {:process {:fn (fn [input] {:result {:doubled (* 2 (:n input))}})
+                                               :input [:map [:n :int]]}}
+                             :edges {}
+                             :caps {:main {:entry :process}}})]
+      (is (thrown-with-msg? Exception #"validation failed"
+                            (run-agent! g {:n "not-an-int"})))))
+
+  (testing "edge schema incompatibility detected at make-agent"
+    (is (thrown-with-msg? Exception #"Edge schema incompatibility"
+                          (aya/make-agent {:nodes {:a {:fn (fn [_] {:result {:x 1}})
+                                                       :output [:map [:x :int]]}
+                                                   :b {:fn (fn [_] {:result {}})
+                                                       :input [:map [:y :string]]}}
+                                           :edges {:a :b}
+                                           :caps {:main {:entry :a}}}))))
+
+  (testing "compatible schemas pass validation"
+    (let [g (aya/make-agent {:nodes {:a {:fn (fn [_] {:result {:x 1 :y "hi"}})
+                                         :output [:map [:x :int] [:y :string]]}
+                                     :b {:fn (fn [input] {:result input})
+                                         :input [:map [:x :int]]}}
+                             :edges {:a :b}
+                             :caps {:main {:entry :a}}})]
+      (is (= {:x 1 :y "hi"} (run-agent! g {}))))))
 
 (deftest llm-streaming-test
   (testing "streaming returns tokens then final result"
