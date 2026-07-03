@@ -2,6 +2,7 @@
   "Graph executor using core.async.flow."
   (:require
    [ayatori.graph.llm :as llm]
+   [ayatori.resilience :as resilience]
    [clojure.core.async :as async]
    [clojure.core.async.flow :as flow]))
 
@@ -99,9 +100,12 @@
 
 (defn- pure-node->step
   "Wraps a pure node fn as a Flow step using map->step.
-   Supports vars for REPL reloadability."
-  [node-fn]
-  (let [f (->fn node-fn)]
+   Supports vars for REPL reloadability. Applies resilience if configured."
+  [node-fn node-key res-config agent-key]
+  (let [f (->fn node-fn)
+        wrapped-f (if res-config
+                    (resilience/wrap-with-resilience f res-config agent-key node-key)
+                    f)]
     (flow/map->step
      {:describe (fn [] {:ins {:in "node input"}
                         :outs {:out "node output"}})
@@ -109,10 +113,10 @@
       (fn [state _in-id msg]
         (let [{:keys [data corr-id fan-out-id]} msg
               result (try
-                       (f data)
+                       (wrapped-f data)
                        (catch Throwable e
                          (throw (ex-info "Node execution failed"
-                                         {:corr-id corr-id} e))))
+                                         {:corr-id corr-id :node node-key} e))))
               output (cond
                        (nil? result) data
                        (not (map? result)) result
@@ -157,8 +161,9 @@
   "Wraps an LLM node as a Flow step. Handles async invocation and routing.
    Uses flow step state to persist LLM conversation state across invocations.
    Routes not in edge go to ::terminal (implicit sink).
-   Streaming uses self-message pattern: each token is a separate invocation."
-  [node-key config edge]
+   Streaming uses self-message pattern: each token is a separate invocation.
+   Resilience applies to stream start and non-streaming invocations."
+  [node-key config edge res-config agent-key]
   (let [routes (if edge (mapv parse-route (normalize-edge edge)) [])
         route-map (into {} (map (juxt :label :target)) routes)
         valid-routes (conj (set (keys route-map)) :done)
@@ -167,7 +172,39 @@
                                  ::terminal "final result")
                     streaming? (assoc ::self-out "stream loop"
                                       ::token-out "stream token"
-                                      ::done-out "stream done"))]
+                                      ::done-out "stream done"))
+        ;; Non-streaming invoke with resilience
+        invoke-fn (when res-config
+                    (resilience/wrap-with-resilience
+                     (fn [args]
+                       (let [[config* data state] args
+                             result-ch (llm/invoke-llm-node config* data state)
+                             raw-result (async/<!! result-ch)]
+                         (when (instance? Throwable raw-result)
+                           (throw raw-result))
+                         raw-result))
+                     res-config
+                     agent-key
+                     node-key))
+        ;; Stream start with resilience (timeout, retry for connection)
+        start-stream-fn (if res-config
+                          (resilience/wrap-with-resilience
+                           (fn [args]
+                             (let [[config* data state] args]
+                               {:result (llm/start-stream config* data state)}))
+                           res-config
+                           agent-key
+                           node-key)
+                          nil)
+        continue-stream-fn (if res-config
+                             (resilience/wrap-with-resilience
+                              (fn [args]
+                                (let [[config* state tool-call-id data] args]
+                                  {:result (llm/continue-stream-after-tool config* state tool-call-id data)}))
+                              res-config
+                              agent-key
+                              node-key)
+                             nil)]
     (fn step
       ([] {:ins (cond-> {:in "node input"}
                   streaming? (assoc ::self-in "stream loop"))
@@ -181,26 +218,32 @@
          (if streaming?
            ;; Streaming: check if this is tool result or new request
            (if (:pending-tool-call state)
-             ;; Tool result arrived, continue streaming with new stream
+             ;; Tool result arrived, continue streaming with new stream (with resilience)
              (let [tool-call-id (:pending-tool-call state)
-                   [new-state stream-ch] (llm/continue-stream-after-tool
-                                          config state tool-call-id (:data msg))]
+                   [new-state stream-ch] (if continue-stream-fn
+                                           (:result (continue-stream-fn [config state tool-call-id (:data msg)]))
+                                           (llm/continue-stream-after-tool config state tool-call-id (:data msg)))]
                [(-> new-state
                     (dissoc :pending-tool-call)
                     (assoc :stream-ch stream-ch))
                 {::self-out [{:type :next}]}])
-             ;; New streaming request
+             ;; New streaming request (with resilience for stream start)
              (let [{:keys [data corr-id]} msg
-                   stream-ch (llm/start-stream config data state)]
+                   stream-ch (if start-stream-fn
+                               (:result (start-stream-fn [config data state]))
+                               (llm/start-stream config data state))]
                [(assoc state :stream-ch stream-ch :corr-id corr-id :accumulated "")
                 {::self-out [{:type :next}]}]))
-           ;; Non-streaming path
+           ;; Non-streaming path (with optional resilience)
            (let [{:keys [data corr-id]} msg
-                 result-ch (llm/invoke-llm-node config data state)
-                 raw-result (async/<!! result-ch)]
-             (when (instance? Throwable raw-result)
-               (throw (ex-info "LLM invocation failed"
-                               {:corr-id corr-id :node node-key} raw-result)))
+                 raw-result (if invoke-fn
+                              (invoke-fn [config data state])
+                              (let [result-ch (llm/invoke-llm-node config data state)
+                                    r (async/<!! result-ch)]
+                                (when (instance? Throwable r)
+                                  (throw (ex-info "LLM invocation failed"
+                                                  {:corr-id corr-id :node node-key} r)))
+                                r))]
              (let [{:keys [result]} raw-result
                    new-state (:state raw-result)
                    route-key (:route result)
@@ -218,16 +261,33 @@
          ::self-in
          ;; Streaming: read single event from stream channel
          (let [event (async/<!! (:stream-ch state))
-               corr-id (:corr-id state)]
+               corr-id (:corr-id state)
+               accumulated (:accumulated state "")]
            (cond
              (nil? event)
-             ;; Channel closed unexpectedly
-             (throw (ex-info "Stream closed unexpectedly"
-                             {:corr-id corr-id :node node-key}))
+             ;; Channel closed unexpectedly, return partial response
+             (let [partial-msg {:partial? true
+                                :content accumulated
+                                :error :stream-closed
+                                :role :assistant}
+                   new-state (-> state
+                                 (dissoc :stream-ch :corr-id :accumulated :pending-tool-call)
+                                 (update :turn-count (fnil inc 0)))]
+               [new-state {::done-out [{:data partial-msg :corr-id corr-id}]
+                           ::terminal [{:data partial-msg :corr-id corr-id}]}])
 
              (instance? Throwable event)
-             (throw (ex-info "Stream error"
-                             {:corr-id corr-id :node node-key} event))
+             ;; Stream error, return partial response with error info
+             (let [partial-msg {:partial? true
+                                :content accumulated
+                                :error :stream-interrupted
+                                :error-detail (ex-message event)
+                                :role :assistant}
+                   new-state (-> state
+                                 (dissoc :stream-ch :corr-id :accumulated :pending-tool-call)
+                                 (update :turn-count (fnil inc 0)))]
+               [new-state {::done-out [{:data partial-msg :corr-id corr-id}]
+                           ::terminal [{:data partial-msg :corr-id corr-id}]}])
 
              (= :done (:type event))
              (let [final-msg (:message event)]
@@ -303,24 +363,31 @@
                    [(assoc-in state [:pending fan-out-id :results] updated-results) {}]))))))))))
 
 (defn- dep-node->step
-  "Wraps a dep call as a Flow step. Uses :workload :io for blocking resolution."
-  [dep-key resolve-fn]
-  (fn step
-    ([] {:ins {:in "dep input"}
-         :outs {:out "dep result"}
-         :workload :io})
-    ([_params] {})
-    ([state _transition] state)
-    ([state in-id msg]
-     (case in-id
-       :in (let [{:keys [data corr-id fan-out-id]} msg
-                 result (try
-                          (resolve-fn data)
-                          (catch Throwable e
-                            (throw (ex-info "Dep resolution failed"
-                                            {:corr-id corr-id :dep dep-key} e))))]
-             [state {:out [(cond-> {:data result :corr-id corr-id}
-                             fan-out-id (assoc :fan-out-id fan-out-id))]}])))))
+  "Wraps a dep call as a Flow step. Uses :workload :io for blocking resolution.
+   Applies resilience if configured."
+  [dep-key resolve-fn res-config agent-key]
+  (let [wrapped-fn (if res-config
+                     (resilience/wrap-with-resilience resolve-fn res-config agent-key dep-key)
+                     resolve-fn)]
+    (fn step
+      ([] {:ins {:in "dep input"}
+           :outs {:out "dep result"}
+           :workload :io})
+      ([_params] {})
+      ([state _transition] state)
+      ([state in-id msg]
+       (case in-id
+         :in (let [{:keys [data corr-id fan-out-id]} msg
+                   result (try
+                            (let [r (wrapped-fn data)]
+                              (if (and (map? r) (contains? r :result))
+                                (:result r)
+                                r))
+                            (catch Throwable e
+                              (throw (ex-info "Dep resolution failed"
+                                              {:corr-id corr-id :dep dep-key} e))))]
+               [state {:out [(cond-> {:data result :corr-id corr-id}
+                               fan-out-id (assoc :fan-out-id fan-out-id))]}]))))))
 
 ;; Result delivery helpers
 
@@ -593,9 +660,13 @@
 ;; Topology building
 
 (defn- build-flow-procs
-  "Builds flow/process objects from agent. Reuses conns from topology."
-  [agent dep-resolvers result-registry]
+  "Builds flow/process objects from agent. Reuses conns from topology.
+   Injects resilience wrapper nodes into visible-topology for inspection."
+  [agent dep-resolvers result-registry resilience-config agent-key]
   (let [{:keys [nodes edges topology]} agent
+        agent-resilience (get resilience-config agent-key)
+        ;; Inject wrapper nodes into topology for visibility (inspection only)
+        visible-topology (resilience/inject-resilience-topology topology agent-resilience)
         deps (:deps topology)
         router-nodes (into #{} (keep (fn [[k v]] (when (has-conditional-routes? v) k))) edges)
         fan-out-nodes (into {} (filter (comp fan-out-node? val)) nodes)
@@ -603,27 +674,30 @@
 
         procs (reduce-kv
                (fn [acc k node]
-                 (cond
-                   (contains? fan-out-nodes k)
-                   (assoc acc k {:proc (flow/process (fan-out-node->step k (get fan-out-nodes k)))})
+                 (let [res-config (resilience/resolve-node-config resilience-config agent-key k)]
+                   (cond
+                     (contains? fan-out-nodes k)
+                     (assoc acc k {:proc (flow/process (fan-out-node->step k (get fan-out-nodes k)))})
 
-                   (contains? llm-nodes k)
-                   (assoc acc k {:proc (flow/process (llm-node->step k node (get edges k)))})
+                     (contains? llm-nodes k)
+                     (assoc acc k {:proc (flow/process (llm-node->step k node (get edges k) res-config agent-key))})
 
-                   (not (fn-or-var? node))
-                   acc
+                     (not (fn-or-var? node))
+                     acc
 
-                   (contains? router-nodes k)
-                   (assoc acc k {:proc (flow/process (router-node->step k node (get edges k)))})
+                     (contains? router-nodes k)
+                     (assoc acc k {:proc (flow/process (router-node->step k node (get edges k)))})
 
-                   :else
-                   (assoc acc k {:proc (flow/process (pure-node->step node))})))
+                     :else
+                     (assoc acc k {:proc (flow/process (pure-node->step node k res-config agent-key))}))))
                {}
                nodes)
 
         procs (reduce (fn [acc dep-key]
                         (if-let [resolve-fn (get dep-resolvers dep-key)]
-                          (assoc acc dep-key {:proc (flow/process (dep-node->step dep-key resolve-fn))})
+                          (let [dep-res-config (resilience/resolve-node-config
+                                                resilience-config agent-key dep-key)]
+                            (assoc acc dep-key {:proc (flow/process (dep-node->step dep-key resolve-fn dep-res-config agent-key))}))
                           acc))
                       procs
                       deps)
@@ -635,7 +709,8 @@
     {:procs procs
      :conns (:conns topology)
      :entry-key (:entry-key topology)
-     :deps deps}))
+     :deps deps
+     :visible-topology visible-topology}))
 
 ;; Flow lifecycle
 
@@ -675,12 +750,13 @@
         ref-resolver (:ref-resolver opts)
         wiring (:wiring opts)
         agent-key (:agent opts)
+        resilience-config (:resilience opts)
         dep-resolvers (into {}
                             (map (fn [dep-key]
                                    [dep-key (make-dep-resolver ref-resolver wiring agent-key dep-key)]))
                             (:deps topology))
         result-registry (atom {})
-        flow-topology (build-flow-procs agent dep-resolvers result-registry)
+        flow-topology (build-flow-procs agent dep-resolvers result-registry resilience-config agent-key)
         flow-graph (flow/create-flow {:procs (:procs flow-topology)
                                       :conns (:conns flow-topology)})
         {:keys [report-chan error-chan]} (flow/start flow-graph)
