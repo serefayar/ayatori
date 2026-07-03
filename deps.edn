@@ -3,7 +3,8 @@
         org.clojure/core.async {:mvn/version "1.10.870-alpha2"}
         cheshire/cheshire {:mvn/version "6.0.0"}
         metosin/malli {:mvn/version "0.17.0"}
-        hato/hato {:mvn/version "1.0.0"}}
+        hato/hato {:mvn/version "1.0.0"}
+        dev.failsafe/failsafe {:mvn/version "3.3.2"}}
  :aliases
  {:build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}
                  slipset/deps-deploy {:mvn/version "0.2.2"}}

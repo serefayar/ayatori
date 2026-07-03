@@ -144,7 +144,10 @@ graph TD
                   :inventory inventory-agent
                   :shipping shipping-agent}
          :wiring {:order {:check-stock [:inventory :check-stock]
-                          :estimate-delivery [:shipping :estimate]}}})
+                          :estimate-delivery [:shipping :estimate]}}
+         :resilience {:order {:llm {:timeout-ms 30000
+                                    :retry {:max-retries 2
+                                            :backoff-ms [1000 :exponential 2.0 5000]}}}}})
       aya/start!))
 
 (async/<!! (aya/run sys :order :chat {:content "Is the flux-capacitor in stock? How long for Hill Valley delivery?"}))
@@ -173,6 +176,7 @@ graph TD
 - [System](doc/system.md) - Runtime management
 - [LLM](doc/llm.md) - LLM node, tools, structured output, streaming
 - [Memory](doc/memory.md) - Conversation memory strategies
+- [Resilience](doc/resilience.md) - Timeout, retry, backoff policies
 - [Helper](doc/helper.md) - Convenience functions
 - [Executor](doc/executor.md) - Flow internals, correlation ID, streaming
 

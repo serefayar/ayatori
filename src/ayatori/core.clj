@@ -2,6 +2,7 @@
   (:require
    [ayatori.cap :as cap]
    [ayatori.graph.executor :as executor]
+   [ayatori.resilience :as res]
    [clojure.core.async :as async]
    [clojure.set :as set]
    [malli.core :as m]
@@ -10,17 +11,15 @@
 ;; Graph Specs
 
 (def Route
-  "A route: keyword (bare default), [:target], [:target pred], or [:label :target]."
   [:or
-   :keyword                             ;; :target (bare default in vector)
-   [:tuple :keyword]                    ;; [:target] - default
-   [:tuple :keyword :keyword]           ;; [:label :target] - LLM tool routing
-   [:tuple :keyword fn?]])              ;; [:target pred] - conditional
+   :keyword
+   [:tuple :keyword]
+   [:tuple :keyword :keyword]
+   [:tuple :keyword fn?]])
 
 (def Edge
-  "Keyword for unconditional, or vector of routes for conditional/LLM."
   [:or
-   :keyword                             ;; :target (unconditional)
+   :keyword
    [:vector Route]])
 
 (def ToolSpec
@@ -77,7 +76,6 @@
    (fn [x] (or (fn? x) (and (var? x) (fn? @x))))])
 
 (def FunctionNodeConfig
-  "Function node with optional schema."
   [:map
    [:fn FnOrVar]
    [:input {:optional true} :any]
@@ -111,6 +109,16 @@
   (or (fn? node)
       (and (var? node) (fn? @node))
       (and (map? node) (contains? node :fn) (not (contains? node :type)))))
+
+(defn determine-node-type
+  "Determines the node type from its definition."
+  [node]
+  (cond
+    (function-node? node) :pure
+    (and (map? node) (= :llm (:type node))) :llm
+    (and (map? node) (= :fan-out (:type node))) :fan-out
+    (and (map? node) (= :router (:type node))) :router
+    :else :pure))
 
 (defn- node-schema
   "Extracts schema from node. Returns {:input ... :output ...} or nil."
@@ -306,10 +314,92 @@
    [:agents AgentsMap]
    [:wiring {:optional true} WiringMap]])
 
+;; Resilience Specs
+
+(def BackoffSpec
+  [:or
+   [:tuple :int [:= :constant]]
+   [:tuple :int [:= :exponential] :double :int]])
+
+(def RetrySpec
+  [:map
+   [:max-retries {:optional true} :int]
+   [:backoff-ms {:optional true} BackoffSpec]
+   [:retry-exceptions {:optional true} [:vector :any]]
+   [:retry-callback {:optional true} fn?]])
+
+(def CircuitBreakerSpec
+  [:map
+   [:failure-threshold :int]
+   [:success-threshold {:optional true} :int]
+   [:delay-ms :int]])
+
+(def RateLimitSpec
+  [:map
+   [:rate :int]
+   [:period {:optional true} [:enum :second :minute :hour]]])
+
+(def BulkheadSpec
+  [:map
+   [:concurrency :int]])
+
+(def PureNodeResilienceSpec
+  [:map {:closed true}
+   [:timeout-ms {:optional true} :int]
+   [:retry {:optional true} RetrySpec]
+   [:circuit-breaker {:optional true} CircuitBreakerSpec]
+   [:rate-limit {:optional true} RateLimitSpec]
+   [:bulkhead {:optional true} BulkheadSpec]
+   [:fallback {:optional true} fn?]])
+
+(def IONodeResilienceSpec
+  [:map {:closed true}
+   [:timeout-ms {:optional true} :int]
+   [:retry {:optional true} RetrySpec]
+   [:circuit-breaker {:optional true} CircuitBreakerSpec]
+   [:rate-limit {:optional true} RateLimitSpec]
+   [:bulkhead {:optional true} BulkheadSpec]
+   [:fallback {:optional true} fn?]])
+
+(def EmptyResilienceSpec
+  [:map {:closed true}])
+
+(def NodeResilienceSpec
+  [:map
+   [:timeout-ms {:optional true} :int]
+   [:retry {:optional true} RetrySpec]
+   [:circuit-breaker {:optional true} CircuitBreakerSpec]
+   [:rate-limit {:optional true} RateLimitSpec]
+   [:bulkhead {:optional true} BulkheadSpec]
+   [:fallback {:optional true} fn?]
+   [:http {:optional true} [:map
+                            [:connect-timeout {:optional true} :int]
+                            [:read-timeout {:optional true} :int]]]])
+
+(defn resilience-spec-for-node-type
+  "Returns the appropriate resilience spec for a node type."
+  [node-type]
+  (case node-type
+    :pure PureNodeResilienceSpec
+    :llm IONodeResilienceSpec
+    :dep IONodeResilienceSpec
+    :router EmptyResilienceSpec
+    :fan-out EmptyResilienceSpec
+    PureNodeResilienceSpec))
+
+(def AgentResilienceConfig
+  "Per-node resilience config within an agent."
+  [:map-of :keyword NodeResilienceSpec])
+
+(def ResilienceConfig
+  "System-level resilience config. {:defaults ... :agent-key {:node-key ...}}"
+  [:map-of :keyword [:or NodeResilienceSpec AgentResilienceConfig]])
+
 (def SystemConfig
   [:map
    [:agents AgentsMap]
    [:wiring {:optional true} WiringMap]
+   [:resilience {:optional true} ResilienceConfig]
    [:host {:optional true} :string]
    [:port {:optional true} :int]])
 
@@ -338,6 +428,7 @@
   [:map
    [:agents (atom-of AgentsAtomContent)]
    [:wiring (atom-of WiringMap)]
+   [:resilience {:optional true} ResilienceConfig]
    [:host :string]
    [:port :int]
    [:state (atom-of SystemState)]])
@@ -399,15 +490,41 @@
   [agents]
   (into {} (map (fn [[k v]] [k (wrap-agent k v)])) agents))
 
+(defn- validate-resilience-for-agent
+  "Validates resilience config against node types for an agent."
+  [agent-key agent resilience-config]
+  (when-let [agent-resilience (get resilience-config agent-key)]
+    (doseq [[node-key node-config] agent-resilience]
+      (when-let [node-def (get (:nodes agent) node-key)]
+        (let [node-type (determine-node-type node-def)
+              spec (resilience-spec-for-node-type node-type)]
+          (when-not (m/validate spec node-config)
+            (throw (ex-info "Invalid resilience config for node type"
+                            {:agent agent-key
+                             :node node-key
+                             :node-type node-type
+                             :config node-config
+                             :allowed (res/allowed-patterns-for-type node-type)
+                             :errors (me/humanize (m/explain spec node-config))}))))))))
+
+(defn- validate-all-resilience
+  "Validates resilience config for all agents."
+  [agents resilience-config]
+  (when resilience-config
+    (doseq [[agent-key agent] agents]
+      (validate-resilience-for-agent agent-key agent resilience-config))))
+
 (defn make-system
   "Creates an agent system from a config map."
   {:malli/schema [:=> [:cat SystemConfig] AgentSystem]}
-  [{:keys [agents wiring host port]}]
-  {:agents (atom (flatten-agents agents))
-   :wiring (atom (or wiring {}))
-   :host (or host "localhost")
-   :port (or port 9000)
-   :state (atom {:status :stopped})})
+  [{:keys [agents wiring resilience host port]}]
+  (validate-all-resilience agents resilience)
+  (cond-> {:agents (atom (flatten-agents agents))
+           :wiring (atom (or wiring {}))
+           :host (or host "localhost")
+           :port (or port 9000)
+           :state (atom {:status :stopped})}
+    resilience (assoc :resilience resilience)))
 
 (defn- validate-schema! [schema data direction]
   (when-not (m/validate schema data)
@@ -473,7 +590,8 @@
                           graph
                           {:ref-resolver ref-resolver
                            :wiring (:wiring sys)
-                           :agent agent-key})]
+                           :agent agent-key
+                           :resilience (:resilience sys)})]
           (swap! (:agents sys) assoc-in [agent-key :flow] flow-state))))))
 
 (defn- stop-agent-flows!
@@ -554,13 +672,17 @@
 
 (defn describe-system-topology
   "Returns topology for entire system: all agents, their graphs, and wiring.
-   Available before or after start!. Useful for system-wide visualization."
+   Available before or after start!. Useful for system-wide visualization.
+   After start!, includes resilience wrapper nodes in topology."
   [sys]
   (let [agents-map @(:agents sys)
         wiring @(:wiring sys)
         agent-topologies (into {}
-                               (map (fn [[k {:keys [graph]}]]
-                                      [k (or (:topology graph) (:caps graph))]))
+                               (map (fn [[k {:keys [graph flow]}]]
+                                      ;; Use visible-topology from flow if available (includes resilience wrappers)
+                                      [k (or (get-in flow [:topology :visible-topology])
+                                             (:topology graph)
+                                             (:caps graph))]))
                                agents-map)
         wiring-edges (for [[caller-key caller-wiring] wiring
                            [dep-key [target-agent target-cap]] caller-wiring]
